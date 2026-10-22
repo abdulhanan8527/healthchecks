@@ -1,0 +1,13 @@
+from __future__ import annotations
+
+from collections.abc import Callable
+
+from django.http import HttpRequest, HttpResponse
+
+JSONDict = dict[str, "JSONValue"]
+JSONList = list["JSONValue"]
+JSONValue = JSONDict | JSONList | str | int | float | bool | None
+
+
+ViewFunc = Callable[..., HttpResponse]
+MiddlewareFunc = Callable[[HttpRequest], HttpResponse]
