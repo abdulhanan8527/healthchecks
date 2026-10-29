@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from html import escape
 from typing import NoReturn
 
 from django.conf import settings
@@ -70,18 +71,24 @@ class Telegram(HttpTransport):
         if not TokenBucket.authorize_telegram(self.channel.telegram.id):
             raise TransportError("Rate limit exceeded")
 
-        ping = self.last_ping(flip)
-        ctx = {
-            "flip": flip,
-            "check": flip.owner,
-            "status": flip.new_status,
-            "down_checks": self.down_checks(flip.owner),
-            "ping": ping,
-            # Telegram's message limit is 4096 chars, but clip body at 1000 for
-            # consistency
-            "body": get_ping_body(ping, maxlen=1000),
-        }
-        text = self.tmpl("telegram_message.html", **ctx)
+        # Telegram messages are sent with parse_mode="html", so any probe
+        # report must be HTML-escaped:
+        report = self.probe_report(flip, maxlen=4000)
+        if report:
+            text = escape(report)
+        else:
+            ping = self.last_ping(flip)
+            ctx = {
+                "flip": flip,
+                "check": flip.owner,
+                "status": flip.new_status,
+                "down_checks": self.down_checks(flip.owner),
+                "ping": ping,
+                # Telegram's message limit is 4096 chars, but clip body at 1000 for
+                # consistency
+                "body": get_ping_body(ping, maxlen=1000),
+            }
+            text = self.tmpl("telegram_message.html", **ctx)
 
         try:
             self.send(self.channel.telegram.id, self.channel.telegram.thread_id, text)

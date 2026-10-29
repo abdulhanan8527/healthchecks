@@ -27,11 +27,12 @@ class VictorOps(HttpTransport):
             "status": flip.new_status,
         }
         mtype = "CRITICAL" if flip.new_status == "down" else "RECOVERY"
+        report = self.probe_report(flip)
         payload = {
             "entity_id": str(flip.owner.unique_key),
             "message_type": mtype,
             "entity_display_name": flip.owner.name_then_code(),
-            "state_message": self.tmpl("victorops_description.html", **ctx),
+            "state_message": report or self.tmpl("victorops_description.html", **ctx),
             "monitoring_tool": settings.SITE_NAME,
         }
 

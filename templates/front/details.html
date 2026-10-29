@@ -67,6 +67,269 @@
         </div>
         {% endif %}
 
+        {% if check.api_url %}
+        <div id="target-api" class="details-block">
+            <h2>
+                Target API
+                {% if rw %}
+                <form
+                    method="post"
+                    action="{% url 'hc-probe-now' check.code %}"
+                    class="pull-right">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-default btn-xs">Probe Now</button>
+                </form>
+                {% endif %}
+            </h2>
+            <div>
+                <p>
+                    Healthchecks actively requests this URL
+                    on the configured schedule:
+                </p>
+                <code class="click-to-copy">{{ check.api_url }}</code>
+                <p>
+                    Method: <code>{{ check.api_method }}</code>
+                    {% if check.api_token %}| Bearer token: set{% endif %}
+                </p>
+                <p>
+                    {% if check.api_rules %}
+                        Success requires an HTTP 2xx status <b>and</b> all rules below.
+                    {% else %}
+                        HTTP 2xx responses count as success, anything else as failure.
+                    {% endif %}
+                    Each probe result is sent to every integration assigned
+                    to this check:
+                </p>
+                <ul>
+                    {% for ch in check.channel_set.all %}
+                    <li><b>{{ ch.kind }}</b>: {{ ch }}</li>
+                    {% empty %}
+                    <li>(none yet &mdash; add integrations on the Integrations page)</li>
+                    {% endfor %}
+                </ul>
+                {% if check.api_rules %}
+                <p>Success rules:</p>
+                <pre>{{ check.api_rules }}</pre>
+                {% endif %}
+                {% if check.api_skip_paths %}
+                <p>Omitted from result emails:</p>
+                <pre>{{ check.api_skip_paths }}</pre>
+                {% endif %}
+                {% if check.next_probe %}
+                <p>Next probe: {{ check.next_probe|date:"Y-m-d H:i:s" }} UTC</p>
+                {% endif %}
+                {% if snoozed %}
+                <div class="alert alert-warning">
+                    <b>Snoozed</b> until {{ check.snoozed_until|date:"Y-m-d H:i" }} UTC
+                    &mdash; probes still run and are recorded, but no notifications
+                    are sent.
+                </div>
+                {% endif %}
+                {% if rw %}
+                <div class="form-group">
+                    Snooze notifications:
+                    <form method="post" action="{% url 'hc-snooze' check.code %}" style="display: inline-block">
+                        {% csrf_token %}
+                        <input type="hidden" name="hours" value="1">
+                        <button type="submit" class="btn btn-default btn-xs">1 hour</button>
+                    </form>
+                    <form method="post" action="{% url 'hc-snooze' check.code %}" style="display: inline-block">
+                        {% csrf_token %}
+                        <input type="hidden" name="hours" value="4">
+                        <button type="submit" class="btn btn-default btn-xs">4 hours</button>
+                    </form>
+                    <form method="post" action="{% url 'hc-snooze' check.code %}" style="display: inline-block">
+                        {% csrf_token %}
+                        <input type="hidden" name="hours" value="24">
+                        <button type="submit" class="btn btn-default btn-xs">24 hours</button>
+                    </form>
+                    {% if snoozed %}
+                    <form method="post" action="{% url 'hc-snooze' check.code %}" style="display: inline-block">
+                        {% csrf_token %}
+                        <input type="hidden" name="hours" value="0">
+                        <button type="submit" class="btn btn-primary btn-xs">Resume now</button>
+                    </form>
+                    {% endif %}
+                </div>
+                {% endif %}
+                {% if probe_metrics %}
+                <div id="probe-history">
+                    <p>
+                        <b>Probe history (last 30 days):</b>
+                        {{ probe_metrics|length }} probe{{ probe_metrics|length|pluralize }}.
+                        Bar height = response time, green = success, red = failure.
+                    </p>
+                    {{ probe_metrics|probe_sparkline }}
+                </div>
+                {% endif %}
+                {% if check.url %}
+                <p>
+                    <b>Optional completion signal:</b> add
+                    <code>curl -fsS --max-time 10 --retry 5 {{ check.url }}</code>
+                    at the end of your cron job. When this signal arrives it is
+                    recorded in the event log and the API is re-probed
+                    immediately &mdash; whatever time the job actually finished.
+                    The signal never changes the check's status by itself: only
+                    the probe's verdict does. Probe checks send probe result
+                    emails only (no up/down emails). The scheduled probe still
+                    runs as a safety net in case the job never reports in.
+                </p>
+                {% endif %}
+                {% if rw %}
+                <details>
+                    <summary>Edit probe settings</summary>
+                    <form method="post" action="{% url 'hc-update-probe-settings' check.code %}" class="form-horizontal">
+                        {% csrf_token %}
+                        <div class="form-group">
+                            <label class="col-sm-3 control-label">API URL</label>
+                            <div class="col-sm-9">{{ probe_form.api_url }}</div>
+                        </div>
+                        <div class="form-group">
+                            <label class="col-sm-3 control-label">Method</label>
+                            <div class="col-sm-9">{{ probe_form.api_method }}</div>
+                        </div>
+                        <div class="form-group">
+                            <label class="col-sm-3 control-label">Bearer Token</label>
+                            <div class="col-sm-9">{{ probe_form.api_token }}</div>
+                        </div>
+                        <div class="form-group">
+                            <label class="col-sm-3 control-label">Success Rules</label>
+                            <div class="col-sm-9">
+                                {{ probe_form.api_rules }}
+                                <span class="help-block">
+                                    JSON list, e.g.
+                                    <code>[{"path": "data.date", "op": "eq_today"}, {"path": "data.statistics.count", "op": "eq", "value": 0}]</code>.
+                                    Ops: eq, ne, gt, gte, lt, lte, contains, not_contains,
+                                    exists, missing, true, false, eq_today.
+                                    Special paths: <code>status_code</code>,
+                                    <code>response_time_ms</code> (probe latency).
+                                    Empty = any HTTP 2xx counts as success.
+                                </span>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="col-sm-3 control-label">Skip Paths</label>
+                            <div class="col-sm-9">
+                                {{ probe_form.api_skip_paths }}
+                                <span class="help-block">
+                                    One JSON path per line to omit from the response
+                                    body in result emails, e.g. <code>data.route_wise_trips</code>.
+                                </span>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="col-sm-3 control-label">Request Headers</label>
+                            <div class="col-sm-9">
+                                {{ probe_form.api_headers }}
+                                <span class="help-block">
+                                    Optional JSON object with extra request headers,
+                                    e.g. <code>{"X-Api-Key": "secret"}</code>.
+                                </span>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="col-sm-3 control-label">Request Body</label>
+                            <div class="col-sm-9">
+                                {{ probe_form.api_body }}
+                                <span class="help-block">
+                                    Optional request body, sent verbatim (useful
+                                    for POST probes with a JSON payload).
+                                </span>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="col-sm-3 control-label">Timeout (s)</label>
+                            <div class="col-sm-9">
+                                {{ probe_form.api_timeout }}
+                                <span class="help-block">
+                                    Per-probe request timeout in seconds.
+                                    0 (or blank) uses the default of 30s.
+                                </span>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="col-sm-3 control-label">Min Failures</label>
+                            <div class="col-sm-9">
+                                {{ probe_form.probe_min_failures }}
+                                <span class="help-block">
+                                    Consecutive failures required before notifying.
+                                    Failures below the threshold are silently
+                                    retried after 60 seconds.
+                                </span>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="col-sm-3 control-label">Escalate After (min)</label>
+                            <div class="col-sm-9">
+                                {{ probe_form.probe_escalate_after }}
+                                <span class="help-block">
+                                    If a failure persists for this many minutes,
+                                    send a second, escalated notification.
+                                    0 = escalation off.
+                                </span>
+                            </div>
+                        </div>
+                        {% if probe_form.depends_on.field.queryset.exists %}
+                        <div class="form-group">
+                            <label class="col-sm-3 control-label">Depends On</label>
+                            <div class="col-sm-9">
+                                {{ probe_form.depends_on }}
+                                <span class="help-block">
+                                    Suppress this check's notifications while any
+                                    selected check is down (the root cause is
+                                    already alerting).
+                                </span>
+                            </div>
+                        </div>
+                        {% endif %}
+                        <div class="form-group">
+                            <label class="col-sm-3 control-label">Remote Probe</label>
+                            <div class="col-sm-9">
+                                <div class="checkbox">
+                                    <label>{{ probe_form.probe_remote }} Probe from remote agents</label>
+                                </div>
+                                <span class="help-block">
+                                    When enabled, the local worker skips this
+                                    check; remote <code>probe_agent</code>
+                                    instances poll and probe it from their own
+                                    locations instead.
+                                </span>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <div class="col-sm-offset-3 col-sm-9">
+                                <button type="submit" class="btn btn-primary">Save Probe Settings</button>
+                            </div>
+                        </div>
+                    </form>
+                </details>
+                <details id="rules-playground">
+                    <summary>Rules playground</summary>
+                    <p>
+                        Test success rules against a sample response body
+                        without running a probe:
+                    </p>
+                    <div class="form-group">
+                        <label for="pg-body">Sample response body (JSON)</label>
+                        <textarea id="pg-body" class="form-control" rows="6" placeholder='{"data": {"date": "2026-10-22"}}'></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="pg-rules">Rules (JSON)</label>
+                        <textarea id="pg-rules" class="form-control" rows="5">{{ check.api_rules }}</textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="pg-status">Simulated HTTP status code</label>
+                        <input id="pg-status" type="number" class="form-control" value="200" style="width: 120px">
+                    </div>
+                    <button id="pg-run" type="button" class="btn btn-default">Evaluate Rules</button>
+                    <div id="pg-results" class="well" style="display: none; margin-top: 10px"></div>
+                </details>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+
+        {% if not check.api_url %}
         <div id="how-to-ping" class="details-block">
             <h2>
                 How To Ping
@@ -126,6 +389,7 @@
                 {% endif %}
             </div>
         </div>
+        {% endif %}
 
         <div class="details-block">
             <h2>Current Status</h2>
@@ -391,4 +655,53 @@
 <script src="{% static 'js/details.js' %}"></script>
 <script src="{% static 'js/slug-suggestions.js' %}"></script>
 {% endcompress %}
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    var run = document.getElementById("pg-run");
+    if (!run) return;
+
+    function esc(s) {
+        var d = document.createElement("div");
+        d.textContent = String(s === undefined || s === null ? "" : s);
+        return d.innerHTML;
+    }
+
+    run.addEventListener("click", function() {
+        var fd = new FormData();
+        fd.append("sample_body", document.getElementById("pg-body").value);
+        fd.append("rules", document.getElementById("pg-rules").value);
+        fd.append("status_code", document.getElementById("pg-status").value);
+        fd.append("csrfmiddlewaretoken", "{{ csrf_token }}");
+
+        fetch("{% url 'hc-playground' check.code %}", {method: "POST", body: fd})
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                var box = document.getElementById("pg-results");
+                box.style.display = "block";
+                if (data.error) {
+                    box.innerHTML = "<b class='text-danger'>Error:</b> " + esc(data.error);
+                    return;
+                }
+                if (!data.results.length) {
+                    box.textContent = "No rules to evaluate.";
+                    return;
+                }
+                var html = "<table class='table'><tr><th>Result</th><th>Field (path)</th><th>Condition</th><th>Expected</th><th>Actual</th></tr>";
+                data.results.forEach(function(r) {
+                    var mark = r.ok
+                        ? "<b class='text-success'>PASS</b>"
+                        : "<b class='text-danger'>FAIL</b>";
+                    html += "<tr><td>" + mark + "</td>"
+                        + "<td><code>" + esc(r.path) + "</code></td>"
+                        + "<td>" + esc(r.op) + "</td>"
+                        + "<td>" + esc(r.expected || "-") + "</td>"
+                        + "<td>" + esc(r.actual)
+                        + (r.ok ? "" : " <i>(" + esc(r.error) + ")</i>")
+                        + "</td></tr>";
+                });
+                box.innerHTML = html + "</table>";
+            });
+    });
+});
+</script>
 {% endblock %}

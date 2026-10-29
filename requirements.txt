@@ -3,6 +3,7 @@ Django[argon2]==6.1.2
 django-compressor==4.6
 django-stubs-ext==6.1.2
 fido2==2.2.1
+gunicorn==23.0.0
 minismtpd==0.3
 oncalendar==1.1
 psycopg==3.3.6

@@ -13,11 +13,15 @@ class Pushbullet(HttpTransport):
             "Access-Token": self.channel.value,
             "Content-Type": "application/json",
         }
-        text = self.tmpl(
-            "pushbullet_message.html",
-            flip=flip,
-            check=flip.owner,
-            status=flip.new_status,
-        )
-        payload = {"type": "note", "title": settings.SITE_NAME, "body": text}
+        if report := self.probe_report(flip):
+            title, body = report.split("\n", 1)[0], report
+        else:
+            title = settings.SITE_NAME
+            body = self.tmpl(
+                "pushbullet_message.html",
+                flip=flip,
+                check=flip.owner,
+                status=flip.new_status,
+            )
+        payload = {"type": "note", "title": title, "body": body}
         self.post(url, json=payload, headers=headers)

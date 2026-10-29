@@ -19,11 +19,16 @@ class PagerTree(HttpTransport):
             "status": flip.new_status,
             "ping": self.last_ping(flip),
         }
+        report = self.probe_report(flip)
         payload = {
             "incident_key": str(flip.owner.unique_key),
             "event_type": "trigger" if flip.new_status == "down" else "resolve",
-            "title": self.tmpl("pagertree_title.html", **ctx),
-            "description": self.tmpl("pagertree_description.html", **ctx),
+            "title": (
+                report.split("\n", 1)[0]
+                if report
+                else self.tmpl("pagertree_title.html", **ctx)
+            ),
+            "description": report or self.tmpl("pagertree_description.html", **ctx),
             "client": settings.SITE_NAME,
             "client_url": settings.SITE_ROOT,
             "tags": " ".join(flip.owner.tags_list()),

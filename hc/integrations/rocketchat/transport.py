@@ -17,6 +17,16 @@ class RocketChat(HttpTransport):
 
     def payload(self, flip: Flip) -> JSONDict:
         check = flip.owner
+
+        if report := self.probe_report(flip):
+            color = "#5cb85c" if flip.new_status == "up" else "#d9534f"
+            return {
+                "alias": settings.SITE_NAME,
+                "avatar": absolute_site_logo_url(),
+                "text": report,
+                "attachments": [{"color": color}],
+            }
+
         url = check.cloaked_url()
         color = "#5cb85c" if flip.new_status == "up" else "#d9534f"
         fields = SlackFields()

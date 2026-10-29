@@ -40,10 +40,16 @@ class GitHub(HttpTransport):
         if body and "```" not in body:
             ctx["body"] = body
 
+        if report := self.probe_report(flip):
+            title, body = report.split("\n", 1)[0], report
+        else:
+            title = self.tmpl("github_title.html", **ctx)
+            body = self.tmpl("github_body.html", **ctx)
+
         url = f"https://api.github.com/repos/{self.channel.github.repo}/issues"
         payload = {
-            "title": self.tmpl("github_title.html", **ctx),
-            "body": self.tmpl("github_body.html", **ctx),
+            "title": title,
+            "body": body,
             "labels": self.channel.github.labels,
         }
 

@@ -29,11 +29,16 @@ class Ntfy(HttpTransport):
             "ping": self.last_ping(flip),
             "down_checks": self.down_checks(flip.owner),
         }
+        report = self.probe_report(flip)
         payload = {
             "topic": self.channel.ntfy.topic,
             "priority": self.priority(flip.new_status),
-            "title": self.tmpl("ntfy_title.html", **ctx),
-            "message": self.tmpl("ntfy_message.html", **ctx),
+            "title": (
+                report.split("\n", 1)[0]
+                if report
+                else self.tmpl("ntfy_title.html", **ctx)
+            ),
+            "message": report or self.tmpl("ntfy_message.html", **ctx),
             "markdown": True,
             "tags": ["red_circle" if flip.new_status == "down" else "green_circle"],
             "actions": [

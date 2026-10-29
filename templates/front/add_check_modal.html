@@ -69,6 +69,130 @@
                     </div>
 
                     <div class="form-group">
+                        <label for="add-check-api-url" class="col-sm-3 control-label">
+                            API URL
+                        </label>
+                        <div class="col-sm-9">
+                            <input
+                                id="add-check-api-url"
+                                name="api_url"
+                                type="text"
+                                maxlength="1000"
+                                placeholder="https://example.org/api/cron-status"
+                                class="form-control" />
+                            <span class="help-block">
+                                Healthchecks will request this URL on the schedule
+                                below and email you the response. HTTP 2xx counts as
+                                success, anything else as failure.
+                                Leave blank for a classic ping-based check.
+                            </span>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="add-check-api-method" class="col-sm-3 control-label">
+                            Method
+                        </label>
+                        <div class="col-sm-9">
+                            <select id="add-check-api-method" name="api_method" class="form-control">
+                                <option value="GET" selected>GET</option>
+                                <option value="POST">POST</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="add-check-api-token" class="col-sm-3 control-label">
+                            Bearer Token
+                        </label>
+                        <div class="col-sm-9">
+                            <input
+                                id="add-check-api-token"
+                                name="api_token"
+                                type="text"
+                                maxlength="500"
+                                class="form-control" />
+                            <span class="help-block">
+                                Optional. Sent as an "Authorization: Bearer ..." request header.
+                            </span>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="col-sm-3 control-label">
+                            Notifications
+                        </label>
+                        <div class="col-sm-9">
+                            <p class="form-control-static">
+                                Probe results are sent to every integration
+                                in this project:
+                            </p>
+                            {% if project.channel_set.all %}
+                            <ul>
+                                {% for ch in project.channel_set.all %}
+                                <li><b>{{ ch.kind }}</b>: {{ ch }}</li>
+                                {% endfor %}
+                            </ul>
+                            {% else %}
+                            <span class="help-block">
+                                No integrations yet. Add email, Mattermost,
+                                Slack, ... on the Integrations page &mdash;
+                                every probe result is delivered to all of them.
+                            </span>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="col-sm-3 control-label" for="add-check-api-rules">
+                            Success Rules
+                        </label>
+                        <div class="col-sm-9">
+                            <textarea
+                                id="add-check-api-rules"
+                                name="api_rules"
+                                rows="5"
+                                class="form-control"
+                                placeholder='[
+    {"path": "data.date", "op": "eq_today"},
+    {"path": "data.statistics.discrepancy_in_frequencies_count", "op": "eq", "value": 0},
+    {"path": "data.overall_success", "op": "true"}
+]'></textarea>
+                            <span class="help-block">
+                                Optional. A JSON list of checks run against the response
+                                body: the probe counts as success only if the HTTP status
+                                is 2xx <b>and</b> every rule passes. Each rule:
+                                <code>{"path": "data.field", "op": "eq", "value": 0}</code>.
+                                Ops: eq, ne, gt, gte, lt, lte, contains, not_contains,
+                                exists, missing, true, false, eq_today (value is today's
+                                date in the check's timezone). Paths support dots and
+                                array indexes: <code>data.items[0].name</code>.
+                                Leave empty for "any HTTP 2xx = success".
+                            </span>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="col-sm-3 control-label" for="add-check-skip-paths">
+                            Skip Paths
+                        </label>
+                        <div class="col-sm-9">
+                            <textarea
+                                id="add-check-skip-paths"
+                                name="api_skip_paths"
+                                rows="2"
+                                class="form-control"
+                                placeholder="data.route_wise_trips"></textarea>
+                            <span class="help-block">
+                                Optional. One JSON path per line to omit from the
+                                response body in result emails (useful for huge
+                                lists like <code>data.route_wise_trips</code>).
+                                Success rules still run against the full response.
+                            </span>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
                         <label class="col-sm-3 control-label">
                             Schedule
                         </label>

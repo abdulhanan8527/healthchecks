@@ -23,7 +23,8 @@ class GoogleChat(HttpTransport):
         fields = GoogleChatFields()
 
         ctx = {"flip": flip, "check": check, "status": flip.new_status}
-        text = self.tmpl("googlechat_message.html", **ctx)
+        report = self.probe_report(flip)
+        text = report if report else self.tmpl("googlechat_message.html", **ctx)
         fields.append({"textParagraph": {"text": text}})
 
         if check.project.name:

@@ -42,7 +42,18 @@ class Opsgenie(HttpTransport):
             "source": settings.SITE_NAME,
         }
 
-        if flip.new_status == "down":
+        url = "https://api.opsgenie.com/v2/alerts"
+        if self.channel.opsgenie.region == "eu":
+            url = "https://api.eu.opsgenie.com/v2/alerts"
+
+        if report := self.probe_report(flip):
+            # Active probe: open an alert with the unified probe report,
+            # regardless of the verdict.
+            payload["tags"] = cast(JSONValue, check.tags_list())
+            payload["message"] = report.split("\n", 1)[0]
+            payload["description"] = report
+            payload["details"] = {"Full details": check.cloaked_url()}
+        elif flip.new_status == "down":
             ctx = {"flip": flip, "check": check, "ping": self.last_ping(flip)}
             payload["tags"] = cast(JSONValue, check.tags_list())
             payload["message"] = self.tmpl("opsgenie_message.html", **ctx)
@@ -64,12 +75,7 @@ class Opsgenie(HttpTransport):
                 details["Time zone"] = check.tz
             details["Full details"] = check.cloaked_url()
             payload["details"] = details
-
-        url = "https://api.opsgenie.com/v2/alerts"
-        if self.channel.opsgenie.region == "eu":
-            url = "https://api.eu.opsgenie.com/v2/alerts"
-
-        if flip.new_status == "up":
+        else:
             url += f"/{check.unique_key}/close?identifierType=alias"
 
         self.post(url, json=payload, headers=headers)

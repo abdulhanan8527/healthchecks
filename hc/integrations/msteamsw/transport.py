@@ -18,6 +18,44 @@ class MsTeamsWorkflow(HttpTransport):
     def payload(self, flip: Flip) -> JSONDict:
         check = flip.owner
         name = check.name_then_code()
+
+        if report := self.probe_report(flip):
+            title = report.split("\n", 1)[0]
+            probe_blocks: JSONList = [
+                {
+                    "type": "TextBlock",
+                    "text": title,
+                    "weight": "bolder",
+                    "size": "medium",
+                    "wrap": True,
+                    "style": "heading",
+                },
+                {"type": "TextBlock", "text": report, "wrap": True},
+            ]
+            return {
+                "type": "message",
+                "attachments": [
+                    {
+                        "contentType": "application/vnd.microsoft.card.adaptive",
+                        "contentUrl": None,
+                        "content": {
+                            "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                            "type": "AdaptiveCard",
+                            "fallbackText": title,
+                            "version": "1.2",
+                            "body": probe_blocks,
+                            "actions": [
+                                {
+                                    "type": "Action.OpenUrl",
+                                    "title": f"View in {settings.SITE_NAME}",
+                                    "url": check.cloaked_url(),
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+
         fields = SlackFields()
         ctx = {
             "flip": flip,

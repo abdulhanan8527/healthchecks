@@ -20,10 +20,13 @@ class Apprise(HttpTransport):
 
         a = apprise.Apprise()
         check, status = flip.owner, flip.new_status
-        title = self.tmpl("apprise_title.html", check=check, status=status)
-        body = self.tmpl(
-            "apprise_description.html", check=check, status=status, flip=flip
-        )
+        if report := self.probe_report(flip):
+            title, body = report.split("\n", 1)[0], report
+        else:
+            title = self.tmpl("apprise_title.html", check=check, status=status)
+            body = self.tmpl(
+                "apprise_description.html", check=check, status=status, flip=flip
+            )
 
         a.add(self.channel.value)
 

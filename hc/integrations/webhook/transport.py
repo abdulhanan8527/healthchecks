@@ -6,7 +6,12 @@ from urllib.parse import quote
 from django.conf import settings
 
 from hc.api.models import Flip, Notification
-from hc.api.transports import HttpTransport, TransportError, get_ping_body
+from hc.api.transports import (
+    HttpTransport,
+    TransportError,
+    get_ping_body,
+    probe_report_text,
+)
 from hc.lib.string import replace
 
 
@@ -47,6 +52,16 @@ class Webhook(HttpTransport):
             lp = self.last_ping(flip)
             if lp and lp.exitstatus is not None:
                 ctx["$EXITSTATUS"] = str(lp.exitstatus)
+
+        # Active probe results expose the unified probe report as $PROBE_STATUS
+        # and $PROBE_REPORT variables:
+        if probe := getattr(flip, "probe", None):
+            report = probe_report_text(check.name_then_code(), probe)
+            ctx["$PROBE_STATUS"] = safe(
+                "success" if probe["success"] else "failure"
+            )
+            ctx["$PROBE_REPORT"] = safe(report)
+            ctx["$PROBE_REPORT_JSON"] = safe(json.dumps(report))
 
         for i, tag in enumerate(check.tags_list()):
             ctx[f"$TAG{i + 1}"] = safe(tag)

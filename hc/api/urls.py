@@ -65,6 +65,12 @@ api_urls = [
     path("checks/<uuid:code>/flips/", views.flips_by_uuid, name="hc-api-flips"),
     path("checks/<sha1:unique_key>/flips/", views.flips_by_unique_key),
     path("channels/", views.channels),
+    path("agent/checks/", views.agent_checks, name="hc-api-agent-checks"),
+    path(
+        "agent/checks/<uuid:code>/result/",
+        views.agent_result,
+        name="hc-api-agent-result",
+    ),
     path("badges/", views.badges),
     path("metrics/", views.metrics),
     path("status/", views.status),

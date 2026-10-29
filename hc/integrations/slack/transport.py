@@ -32,6 +32,13 @@ class Slackalike(HttpTransport):
         """Prepare JSON-serializable payload for Slack-compatible incoming webhook."""
         check = flip.owner
         name = check.name_then_code()
+
+        # Active probe checks attach their probe report to the flip, so that
+        # chat integrations show the exact same content as the result email:
+        probe = getattr(flip, "probe", None)
+        if probe:
+            return self.probe_payload(name, probe)
+
         fields = SlackFields()
         text = None
         if flip.reason:
@@ -84,6 +91,121 @@ class Slackalike(HttpTransport):
             fields.add("Last Ping Body", f"```\n{body}\n```", short=False)
 
         return result
+
+    def probe_payload(self, name: str, probe: dict) -> JSONDict:
+        """Render the probe report in the same layout as the result email."""
+
+        # Digest payloads combine several queued probe reports into one card:
+        if "digest" in probe:
+            from hc.api.transports import probe_report_text
+
+            text = probe_report_text(name, probe, maxlen=6000)
+            fails = sum(1 for e in probe["digest"] if not e["verdict"])
+            return {
+                "username": settings.SITE_NAME,
+                "icon_url": absolute_site_logo_url(),
+                "attachments": [
+                    {
+                        "color": "good" if not fails else "danger",
+                        "fallback": text[:500],
+                        "mrkdwn_in": ["text"],
+                        "title": f"Probe digest ({probe.get('period', '')})"
+                        f" | {len(probe['digest'])} result(s)",
+                        "title_link": probe.get("details_url", ""),
+                        "text": f"```\n{text}\n```",
+                    }
+                ],
+            }
+
+        def cell(value: object) -> str:
+            # Pipes would break the markdown table structure:
+            return str(value).replace("|", "\\|")
+
+        verdict = "SUCCESS" if probe["success"] else "FAILURE"
+        title = f"Probe result: {verdict} | {name}"
+        if probe.get("escalation"):
+            title = f"ESCALATION - {title}"
+        lines = [
+            f"*Check:* {name}",
+            f"*API:* `{probe['api_method']} {probe['api_url']}`",
+            f"*HTTP status:* {probe['status_code'] or 'n/a'}",
+        ]
+        if probe.get("response_ms") is not None:
+            lines.append(f"*Response time:* {probe['response_ms']} ms")
+        lines.append(f"*Time (UTC):* {probe['probe_time']:%b %d, %Y, %H:%M}")
+        if probe["error"]:
+            lines.append(f"*Error:* {probe['error']}")
+
+        if probe["rules"]:
+            lines.append("")
+            lines.append("*Response checks*")
+            lines.append("| Result | Field (path) | Condition | Expected | Actual |")
+            lines.append("| --- | --- | --- | --- | --- |")
+            for r in probe["rules"]:
+                mark = "PASS" if r["ok"] else "FAIL"
+                expected = r["expected"] if r["expected"] not in (None, "") else "-"
+                actual = cell(r["actual"])
+                if not r["ok"] and r.get("error"):
+                    actual += f" ({cell(r['error'])})"
+                lines.append(
+                    f"| {mark} | `{cell(r['path'])}` | {cell(r['op'])} "
+                    f"| {cell(expected)} | {actual} |"
+                )
+
+        if probe["rules_error"]:
+            lines.append(f"*Rules error:* {probe['rules_error']}")
+
+        if probe.get("drift"):
+            lines.append("")
+            lines.append("*Schema drift* (vs the last successful response)")
+            if probe["drift"].get("added"):
+                lines.append(f"New fields: `{'`, `'.join(probe['drift']['added'])}`")
+            if probe["drift"].get("removed"):
+                lines.append(
+                    f"Missing fields: `{'`, `'.join(probe['drift']['removed'])}`"
+                )
+
+        lines.append("")
+        lines.append(f"<{probe['details_url']}|View check details>")
+
+        body = probe["body"][:6000]
+        if body:
+            lines.append("")
+            lines.append("*Response body*")
+            if probe["skipped"]:
+                lines.append(
+                    f"_Omitted from response body: {', '.join(probe['skipped'])}_"
+                )
+            if "```" not in body:
+                lines.append(f"```\n{body}\n```")
+            else:
+                lines.append(body)
+
+        attachment: JSONDict = {
+            "color": "good" if probe["success"] else "danger",
+            "fallback": f'Probe result for "{name}": {verdict}.',
+            "mrkdwn_in": ["text"],
+            "title": title,
+            "title_link": probe["details_url"],
+            "text": "\n".join(lines),
+        }
+        if actions := self.probe_actions(probe):
+            attachment["actions"] = actions
+
+        return {
+            "username": settings.SITE_NAME,
+            "icon_url": absolute_site_logo_url(),
+            "attachments": [attachment],
+        }
+
+    def probe_actions(self, probe: dict) -> list[JSONDict]:
+        """Interactive message buttons for probe reports.
+
+        The base implementation returns none; Mattermost overrides this to
+        add Snooze/Un-snooze buttons that call back into Healthchecks.
+        """
+
+        return []
 
     def fix_asterisks(self, s: str) -> str:
         """Escape asterisks so that they are not recognized as Markdown syntax."""

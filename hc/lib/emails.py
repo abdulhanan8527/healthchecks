@@ -105,6 +105,14 @@ def alert(
     send(m, block=True)
 
 
+def probe_result(to: str, ctx: dict[str, Any]) -> None:
+    send(make_message("probe-result", to, ctx))
+
+
+def probe_digest(to: str, ctx: dict[str, Any]) -> None:
+    send(make_message("probe-digest", to, ctx))
+
+
 def verify_email(to: str, ctx: dict[str, Any]) -> None:
     send(make_message("verify-email", to, ctx))
 

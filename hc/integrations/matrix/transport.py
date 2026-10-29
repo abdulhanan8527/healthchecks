@@ -7,6 +7,7 @@ from django.conf import settings
 
 from hc.api.models import Flip, Notification
 from hc.api.transports import HttpTransport, get_ping_body
+from hc.lib.typealias import JSONDict
 
 
 class Matrix(HttpTransport):
@@ -19,22 +20,25 @@ class Matrix(HttpTransport):
         return url
 
     def notify(self, flip: Flip, notification: Notification) -> None:
-        ping = self.last_ping(flip)
-        ctx = {
-            "flip": flip,
-            "check": flip.owner,
-            "status": flip.new_status,
-            "ping": ping,
-            "body": get_ping_body(ping, maxlen=1000),
-            "down_checks": self.down_checks(flip.owner),
-        }
-        plain = self.tmpl("matrix_description.html", **ctx)
-        formatted = self.tmpl("matrix_description_formatted.html", **ctx)
-        payload = {
-            "msgtype": "m.text",
-            "body": plain,
-            "format": "org.matrix.custom.html",
-            "formatted_body": formatted,
-        }
+        if report := self.probe_report(flip):
+            payload: JSONDict = {"msgtype": "m.text", "body": report}
+        else:
+            ping = self.last_ping(flip)
+            ctx = {
+                "flip": flip,
+                "check": flip.owner,
+                "status": flip.new_status,
+                "ping": ping,
+                "body": get_ping_body(ping, maxlen=1000),
+                "down_checks": self.down_checks(flip.owner),
+            }
+            plain = self.tmpl("matrix_description.html", **ctx)
+            formatted = self.tmpl("matrix_description_formatted.html", **ctx)
+            payload = {
+                "msgtype": "m.text",
+                "body": plain,
+                "format": "org.matrix.custom.html",
+                "formatted_body": formatted,
+            }
         headers = {"Authorization": f"Bearer {settings.MATRIX_ACCESS_TOKEN}"}
         self.put(self.get_url(), json=payload, headers=headers)

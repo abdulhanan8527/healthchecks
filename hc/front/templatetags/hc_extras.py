@@ -335,3 +335,37 @@ def decode(v: bytes) -> str:
 @register.filter
 def uppercase_if_down(s: str) -> str:
     return "DOWN" if s == "down" else s
+
+
+@register.filter
+def probe_sparkline(metrics: Any, limit: int = 120) -> SafeString:
+    """Render probe history (ProbeMetric rows, oldest first) as inline SVG.
+
+    Each probe is a vertical bar: green for success, red for failure, with
+    the bar height proportional to the response time. Hovering a bar shows
+    the timestamp, verdict and latency.
+    """
+
+    items = list(metrics)[-limit:]
+    if not items:
+        return mark_safe("")
+
+    w, h = 300, 30
+    slot = w / len(items)
+    bar_w = max(1.0, slot - 1)
+    max_ms = max((m.response_ms for m in items), default=1) or 1
+
+    parts = [f'<svg width="{w}" height="{h}" xmlns="http://www.w3.org/2000/svg">']
+    for i, m in enumerate(items):
+        x = i * slot
+        ratio = min(1.0, m.response_ms / max_ms) if max_ms else 0
+        bh = max(3, int(h * ratio))
+        color = "#3c8618" if m.success else "#d9534f"
+        verdict = "OK" if m.success else "FAIL"
+        title = f"{m.created:%Y-%m-%d %H:%M} UTC - {verdict} - {m.response_ms} ms"
+        parts.append(
+            f'<rect x="{x:.1f}" y="{h - bh}" width="{bar_w:.1f}" '
+            f'height="{bh}" fill="{color}"><title>{escape(title)}</title></rect>'
+        )
+    parts.append("</svg>")
+    return mark_safe("".join(parts))

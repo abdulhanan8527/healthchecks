@@ -44,8 +44,14 @@ class Call(HttpTransport):
         ):
             raise TransportError("Call notifications are not enabled")
 
-        ctx = {"check": flip.owner, "site_name": settings.SITE_NAME}
-        message = self.tmpl("call_message.html", **ctx)
+        # Phone calls read the message aloud, so use a short report
+        # without the response body:
+        report = self.probe_report(flip, maxlen=480, include_body=False)
+        if report:
+            message = report
+        else:
+            ctx = {"check": flip.owner, "site_name": settings.SITE_NAME}
+            message = self.tmpl("call_message.html", **ctx)
 
         profile = self.channel.project.owner_profile
         if not profile.authorize_call():

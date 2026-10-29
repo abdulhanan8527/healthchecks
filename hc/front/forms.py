@@ -7,6 +7,8 @@ from datetime import timedelta as td
 
 from django import forms
 
+from hc.api import rules as rules_lib
+from hc.api.models import Check
 from hc.front.validators import (
     CronValidator,
     OnCalendarValidator,
@@ -52,6 +54,31 @@ class AddCheckForm(NameTagsForm):
     schedule = forms.CharField(required=False, max_length=100)
     tz = forms.CharField(max_length=36, validators=[TimezoneValidator()])
     grace = forms.IntegerField(min_value=60, max_value=31536000)
+    api_url = LaxURLField(required=False, max_length=1000, assume_scheme="https")
+    api_method = forms.ChoiceField(
+        required=False, choices=(("GET", "GET"), ("POST", "POST")), initial="GET"
+    )
+    api_token = forms.CharField(required=False, max_length=500)
+    api_rules = forms.CharField(
+        required=False,
+        widget=forms.Textarea(attrs={"rows": 4}),
+        help_text="Optional JSON list of success rules.",
+    )
+
+    def clean_api_rules(self) -> str:
+        text = self.cleaned_data["api_rules"]
+        try:
+            rules_lib.parse_rules(text)
+        except rules_lib.RulesError as e:
+            raise forms.ValidationError(str(e))
+
+        return text
+
+    api_skip_paths = forms.CharField(
+        required=False,
+        widget=forms.Textarea(attrs={"rows": 2}),
+        help_text="Optional JSON paths to omit from the email body, one per line.",
+    )
 
     def clean_timeout(self) -> td:
         return td(seconds=self.cleaned_data["timeout"])
@@ -74,6 +101,111 @@ class AddCheckForm(NameTagsForm):
 
         assert isinstance(self.cleaned_data["schedule"], str)
         return self.cleaned_data["schedule"]
+
+
+class ProbeSettingsForm(forms.ModelForm):
+    """Edit the active-probing settings of an existing check."""
+
+    api_rules = forms.CharField(
+        required=False,
+        widget=forms.Textarea(attrs={"rows": 6, "class": "form-control"}),
+    )
+    api_method = forms.ChoiceField(
+        choices=(("GET", "GET"), ("POST", "POST")),
+        widget=forms.Select(attrs={"class": "form-control"}),
+    )
+    probe_min_failures = forms.IntegerField(
+        min_value=1,
+        max_value=10,
+        widget=forms.NumberInput(attrs={"class": "form-control"}),
+    )
+    probe_escalate_after = forms.IntegerField(
+        min_value=0,
+        max_value=43200,
+        widget=forms.NumberInput(attrs={"class": "form-control"}),
+    )
+    depends_on = forms.ModelMultipleChoiceField(
+        queryset=Check.objects.none(),
+        required=False,
+        widget=forms.CheckboxSelectMultiple,
+    )
+    api_timeout = forms.IntegerField(
+        min_value=0,
+        max_value=600,
+        required=False,
+        widget=forms.NumberInput(attrs={"class": "form-control"}),
+    )
+    probe_remote = forms.BooleanField(required=False, widget=forms.CheckboxInput())
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+        instance = self.instance
+        if instance is not None and getattr(instance, "project_id", None):
+            self.fields["depends_on"].queryset = (
+                Check.objects.filter(project=instance.project)
+                .exclude(id=instance.id)
+                .order_by("created")
+            )
+
+    class Meta:
+        model = Check
+        fields = [
+            "api_url",
+            "api_method",
+            "api_token",
+            "api_headers",
+            "api_body",
+            "api_timeout",
+            "api_rules",
+            "api_skip_paths",
+            "probe_min_failures",
+            "probe_escalate_after",
+            "probe_remote",
+            "depends_on",
+        ]
+        widgets = {
+            "api_url": forms.TextInput(attrs={"class": "form-control"}),
+            "api_token": forms.TextInput(attrs={"class": "form-control"}),
+            "api_headers": forms.Textarea(
+                attrs={"rows": 3, "class": "form-control"}
+            ),
+            "api_body": forms.Textarea(attrs={"rows": 4, "class": "form-control"}),
+            "api_skip_paths": forms.Textarea(
+                attrs={"rows": 2, "class": "form-control"}
+            ),
+        }
+
+    def clean_api_rules(self) -> str:
+        text = self.cleaned_data["api_rules"]
+        try:
+            rules_lib.parse_rules(text)
+        except rules_lib.RulesError as e:
+            raise forms.ValidationError(str(e))
+
+        return text
+
+    def clean_api_headers(self) -> str:
+        text = self.cleaned_data["api_headers"]
+        if not text.strip():
+            return ""
+
+        try:
+            data = json.loads(text)
+        except ValueError as e:
+            raise forms.ValidationError(f"Not valid JSON: {e}")
+
+        if not isinstance(data, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in data.items()
+        ):
+            raise forms.ValidationError(
+                "Must be a JSON object with string keys and values."
+            )
+
+        return text
+
+    def clean_api_timeout(self) -> int:
+        # Blank means "use the global default" -> store 0:
+        return self.cleaned_data.get("api_timeout") or 0
 
 
 class FilteringRulesForm(forms.Form):

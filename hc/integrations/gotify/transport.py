@@ -29,9 +29,14 @@ class Gotify(HttpTransport):
             "status": flip.new_status,
             "down_checks": self.down_checks(flip.owner),
         }
+        report = self.probe_report(flip)
         payload: JSONDict = {
-            "title": self.tmpl("gotify_title.html", **ctx),
-            "message": self.tmpl("gotify_message.html", **ctx),
+            "title": (
+                report.split("\n", 1)[0]
+                if report
+                else self.tmpl("gotify_title.html", **ctx)
+            ),
+            "message": report or self.tmpl("gotify_message.html", **ctx),
             "extras": {
                 "client::display": {"contentType": "text/markdown"},
             },

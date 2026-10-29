@@ -1,0 +1,9 @@
+{% load linemode %}{% linemode %}
+{% line %}Probe digest ({{ period }}) for project: {{ project }}{% endline %}
+{% line %}{{ entries|length }} probe result(s){% endline %}
+{% for e in entries %}
+{% line %}{% endline %}
+{% line %}================================================{% endline %}
+{% line %}{{ e.report }}{% endline %}
+{% endfor %}
+{% endlinemode %}

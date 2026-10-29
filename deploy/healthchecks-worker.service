@@ -1,0 +1,25 @@
+# Healthchecks alert/probe worker. This process runs the active API probes,
+# sends flip notifications, flushes probe digests, handles escalations and
+# pings "watchdog"-tagged checks once a minute. It MUST stay running.
+#
+#   sudo cp deploy/healthchecks-worker.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now healthchecks-worker
+
+[Unit]
+Description=Healthchecks sendalerts worker
+After=network.target
+
+[Service]
+Type=simple
+User=muhammad-ans
+WorkingDirectory=/home/muhammad-ans/webapps/healthchecks
+Environment="SITE_ROOT=https://healthchecks.example.com"
+Environment="DEBUG=False"
+# EnvironmentFile=/etc/healthchecks/env
+ExecStart=/home/muhammad-ans/webapps/.venv/bin/python manage.py sendalerts
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

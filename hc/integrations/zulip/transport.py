@@ -37,12 +37,14 @@ class Zulip(HttpTransport):
 
         url = self.channel.zulip.site + "/api/v1/messages"
         auth = (self.channel.zulip.bot_email, self.channel.zulip.api_key)
-        content = self.tmpl(
-            "zulip_content.html",
-            flip=flip,
-            check=flip.owner,
-            status=flip.new_status,
-        )
+        content = self.probe_report(flip)
+        if content is None:
+            content = self.tmpl(
+                "zulip_content.html",
+                flip=flip,
+                check=flip.owner,
+                status=flip.new_status,
+            )
         data = {
             "type": self.channel.zulip.mtype,
             "to": self.channel.zulip.formatted_to(),

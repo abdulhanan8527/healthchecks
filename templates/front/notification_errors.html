@@ -1,0 +1,59 @@
+{% extends "base_project.html" %}
+
+{% block title %}Notification Errors - {{ site_name }}{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-sm-12">
+        <h1>Notification Errors</h1>
+        <p>
+            Recent notification delivery failures for this project. Transient
+            failures are retried automatically with backoff
+            (1&nbsp;min, 5&nbsp;min, 30&nbsp;min, 2&nbsp;h); a permanent failure
+            disables the channel instead.
+        </p>
+        <p>
+            <a href="{% url 'hc-probe-policies' project.code %}">&larr; Back to Probe Policies</a>
+        </p>
+    </div>
+    <div class="col-sm-12">
+        <table class="table">
+            <tr>
+                <th>When (UTC)</th>
+                <th>Check</th>
+                <th>Channel</th>
+                <th>Status</th>
+                <th>Error</th>
+                <th>Retry queue</th>
+            </tr>
+            {% for row in rows %}
+            <tr>
+                <td>{{ row.notification.created|date:"Y-m-d H:i" }}</td>
+                <td>
+                    {% if row.check %}
+                    <a href="{% url 'hc-details' row.check.code %}">{{ row.check.name_then_code }}</a>
+                    {% else %}
+                    (deleted)
+                    {% endif %}
+                </td>
+                <td>{{ row.channel.kind }}</td>
+                <td>{{ row.notification.check_status }}</td>
+                <td><code>{{ row.notification.error }}</code></td>
+                <td>
+                    {% if row.retrying %}
+                        retrying in {{ row.retry_in }}s
+                        (attempt {{ row.notification.retry_count }})
+                    {% elif row.exhausted %}
+                        gave up after {{ row.notification.retry_count }} attempt(s)
+                    {% else %}
+                        &ndash;
+                    {% endif %}
+                </td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="6">No notification errors &ndash; everything delivered fine.</td></tr>
+            {% endfor %}
+        </table>
+    </div>
+</div>
+{% endblock %}

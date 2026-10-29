@@ -42,6 +42,17 @@ class Email(Transport):
         if not self.channel.email_verified:
             raise TransportError("Email not verified")
 
+        if probe := getattr(flip, "probe", None):
+            # Active probe result: deliver the unified probe report,
+            # same content as the probe result email (relevant when this
+            # channel is a member of a group assigned to the check).
+            try:
+                emails.probe_result(self.channel.email.value, probe)
+            except (SMTPServerDisconnected, SMTPDataError, ConnectionRefusedError):
+                logger.exception("Exception while sending email")
+                raise TransportError("SMTP connection error")
+            return
+
         unsub_link = self.channel.get_unsub_link()
 
         headers = {

@@ -12,6 +12,14 @@ check_urls = [
     path("timeout/", views.update_timeout, name="hc-update-timeout"),
     path("pause/", views.pause, name="hc-pause"),
     path("resume/", views.resume, name="hc-resume"),
+    path("probe/", views.probe_now, name="hc-probe-now"),
+    path(
+        "probe_settings/",
+        views.update_probe_settings,
+        name="hc-update-probe-settings",
+    ),
+    path("probe_playground/", views.playground, name="hc-playground"),
+    path("snooze/", views.snooze, name="hc-snooze"),
     path("remove/", views.remove_check, name="hc-remove-check"),
     path("clear_events/", views.clear_events, name="hc-clear-events"),
     path("log/", views.log, name="hc-log"),
@@ -31,6 +39,11 @@ check_urls = [
 
 # /integrations/
 channel_urls = [
+    path(
+        "mattermost/callback/",
+        views.mattermost_callback,
+        name="hc-mattermost-callback",
+    ),
     path("<uuid:code>/checks/", views.channel_checks, name="hc-channel-checks"),
     path("<uuid:code>/name/", views.update_channel_name, name="hc-channel-name"),
     path("<uuid:code>/edit/", views.edit_channel, name="hc-edit-channel"),
@@ -45,6 +58,23 @@ project_urls = [
     path("checks/add/", views.add_check, name="hc-add-check"),
     path("checks/status/", views.status, name="hc-status"),
     path("integrations/", views.channels, name="hc-channels"),
+    path("probe_policies/", views.project_settings, name="hc-probe-policies"),
+    path(
+        "probe_policies/maintenance/",
+        views.add_maintenance,
+        name="hc-add-maintenance",
+    ),
+    path(
+        "probe_policies/maintenance/remove/",
+        views.remove_maintenance,
+        name="hc-remove-maintenance",
+    ),
+    path("status_page/", views.status_page, name="hc-status-page"),
+    path(
+        "notification_errors/",
+        views.notification_errors,
+        name="hc-notification-errors",
+    ),
 ]
 
 # /

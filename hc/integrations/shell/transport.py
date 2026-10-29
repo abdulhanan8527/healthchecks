@@ -41,6 +41,10 @@ class Shell(Transport):
         for i, tag in enumerate(check.tags_list()):
             env[f"TAG{i + 1}"] = tag
 
+        if report := self.probe_report(flip):
+            env["PROBE_STATUS"] = "success" if flip.new_status == "up" else "failure"
+            env["PROBE_REPORT"] = report
+
         code = call(cmd, env=env, shell=True)
         if code != 0:
             raise TransportError(f"Command returned exit code {code}")

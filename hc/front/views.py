@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import email
+import json
 import logging
 import os
 import re
@@ -19,6 +20,7 @@ from cronsim import CronSim
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.core import signing
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db.models import BinaryField, Case, Count, F, Q, When
 from django.db.models.functions import Substr
@@ -33,7 +35,9 @@ from django.http import (
 from django.shortcuts import get_object_or_404, redirect, render
 from django.template.loader import get_template
 from django.urls import reverse
-from django.utils.timezone import now
+from django.utils.dateparse import parse_datetime
+from django.utils.timezone import is_naive, make_aware, now
+from django.views.decorators.cache import cache_page
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from django_stubs_ext import WithAnnotations
@@ -41,14 +45,18 @@ from oncalendar import OnCalendar, OnCalendarError
 
 from hc.accounts.http import AuthenticatedHttpRequest
 from hc.accounts.models import Member, Profile, Project
+from hc.api import probes
+from hc.api import rules as rules_lib
 from hc.api.models import (
     DEFAULT_GRACE,
     DEFAULT_TIMEOUT,
     Channel,
     Check,
     Flip,
+    MaintenanceWindow,
     Notification,
     Ping,
+    ProbeMetric,
     prepare_durations,
 )
 from hc.front import forms
@@ -546,6 +554,14 @@ def add_check(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
     check.schedule = form.cleaned_data["schedule"]
     check.tz = form.cleaned_data["tz"]
     check.grace = form.cleaned_data["grace"]
+    check.api_url = form.cleaned_data["api_url"]
+    check.api_method = form.cleaned_data["api_method"] or "GET"
+    check.api_token = form.cleaned_data["api_token"]
+    check.api_rules = form.cleaned_data["api_rules"]
+    check.api_skip_paths = form.cleaned_data["api_skip_paths"]
+    if check.api_url:
+        # Probe as soon as the sendalerts worker picks the check up:
+        check.next_probe = now()
     check.save()
 
     check.assign_all_channels()
@@ -553,6 +569,305 @@ def add_check(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
     url = reverse("hc-checks", args=[project.code])
     url += _get_referer_qs(request)  # Preserve selected tags and search
     return redirect(url)
+
+
+@require_POST
+@login_required
+def probe_now(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
+    """Run an active API probe for the given check right now."""
+    check = _get_rw_check_for_user(request, code)
+    if not check.api_url:
+        return HttpResponseBadRequest()
+
+    messages.success(request, probes.probe_check(check))
+    return redirect(check.details_url(full=False))
+
+
+@require_POST
+@login_required
+def update_probe_settings(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
+    """Update the active-probing settings (URL, method, token, rules) of a check."""
+    check = _get_rw_check_for_user(request, code)
+    form = forms.ProbeSettingsForm(request.POST, instance=check)
+    if not form.is_valid():
+        for errors in form.errors.values():
+            for error in errors:
+                messages.error(request, error)
+        return redirect(check.details_url(full=False))
+
+    old_url = check.api_url
+    form.save()
+
+    if check.api_url and (old_url != check.api_url or not check.next_probe):
+        # Target changed: probe it right away on the next worker cycle:
+        check.next_probe = now()
+        check.save(update_fields=["next_probe"])
+    elif not check.api_url:
+        check.next_probe = None
+        check.save(update_fields=["next_probe"])
+
+    messages.success(request, "Probe settings updated.")
+    return redirect(check.details_url(full=False))
+
+
+@require_POST
+@login_required
+def playground(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
+    """Evaluate success rules against a sample response body, without probing.
+
+    Lets the user iterate on rules in the check details page: paste a sample
+    JSON response, tweak the rules, see PASS/FAIL per rule immediately.
+    """
+
+    check = _get_rw_check_for_user(request, code)
+    sample = request.POST.get("sample_body", "")
+    rules_text = request.POST.get("rules", "")
+    try:
+        status_code = int(request.POST.get("status_code") or 200)
+    except ValueError:
+        status_code = 200
+
+    try:
+        parsed_rules = rules_lib.parse_rules(rules_text)
+    except rules_lib.RulesError as e:
+        return JsonResponse({"error": str(e), "results": []})
+
+    results, rules_error = rules_lib.evaluate_rules(
+        parsed_rules,
+        sample.encode(),
+        check.tz,
+        extra={"status_code": status_code, "response_time_ms": 0},
+    )
+    return JsonResponse({"error": rules_error, "results": results})
+
+
+@require_POST
+@login_required
+def snooze(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
+    """Snooze (or un-snooze) probe notifications for a check.
+
+    While snoozed, probes still run and are recorded, but no emails or
+    integration messages are sent.
+    """
+
+    check = _get_rw_check_for_user(request, code)
+    try:
+        hours = int(request.POST.get("hours", "0"))
+    except ValueError:
+        return HttpResponseBadRequest()
+
+    if hours == 0:
+        check.snoozed_until = None
+        messages.success(request, "Notifications resumed.")
+    elif 1 <= hours <= 24 * 7:
+        check.snoozed_until = now() + td(hours=hours)
+        messages.success(
+            request,
+            "Notifications snoozed until "
+            f"{check.snoozed_until:%Y-%m-%d %H:%M} UTC.",
+        )
+    else:
+        return HttpResponseBadRequest()
+
+    check.save(update_fields=["snoozed_until"])
+    return redirect(check.details_url(full=False))
+
+
+@csrf_exempt
+@require_POST
+def mattermost_callback(request: HttpRequest) -> HttpResponse:
+    """Handle Mattermost interactive-message button clicks (Snooze/Un-snooze).
+
+    Mattermost posts {"context": {"token": ..., "action": ...}} here when a
+    user clicks a button on a probe report card. The token is a signed check
+    code issued by the Mattermost transport, so actions cannot be forged.
+    """
+
+    from hc.integrations.mattermost.transport import ACTIONS_SALT
+
+    try:
+        payload = json.loads(request.body)
+    except ValueError:
+        return HttpResponseBadRequest()
+
+    context = payload.get("context") or {}
+    try:
+        check_code = signing.loads(context.get("token", ""), salt=ACTIONS_SALT)
+    except signing.BadSignature:
+        return HttpResponseBadRequest()
+
+    check = Check.objects.filter(code=check_code).first()
+    if not check:
+        raise Http404()
+
+    action = context.get("action", "")
+    durations = {
+        "snooze_1h": td(hours=1),
+        "snooze_4h": td(hours=4),
+        "snooze_24h": td(hours=24),
+    }
+    if action == "unsnooze":
+        check.snoozed_until = None
+        text = f"Notifications resumed for \"{check.name_then_code()}\"."
+    elif action in durations:
+        check.snoozed_until = now() + durations[action]
+        text = (
+            f"Notifications snoozed for \"{check.name_then_code()}\" "
+            f"until {check.snoozed_until:%Y-%m-%d %H:%M} UTC."
+        )
+    else:
+        return HttpResponseBadRequest()
+
+    check.save(update_fields=["snoozed_until"])
+    return JsonResponse({"ephemeral_text": text})
+
+
+@cache_page(60)
+def status_page(request: HttpRequest, code: UUID) -> HttpResponse:
+    """Public, read-only status page for a project (opt-in).
+
+    Shows every check with its current status, the last probe result and a
+    30-day probe history sparkline. Cached for a minute; no login required.
+    """
+
+    project = get_object_or_404(Project, code=code)
+    if not project.status_page_enabled:
+        raise Http404()
+
+    since = now() - td(days=30)
+    rows = []
+    for check in project.check_set.order_by("created"):
+        metrics = list(
+            ProbeMetric.objects.filter(owner=check, created__gte=since).order_by(
+                "created"
+            )
+        )
+        ok = sum(1 for m in metrics if m.success)
+        rows.append(
+            {
+                "check": check,
+                "status": check.get_status(),
+                "metrics": metrics,
+                "ok_count": ok,
+                "total_count": len(metrics),
+            }
+        )
+
+    ctx = {"project": project, "rows": rows, "generated": now()}
+    return render(request, "front/status_page.html", ctx)
+
+
+@login_required
+def project_settings(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
+    """Project-level probe policies: digest mode, status page, maintenance."""
+
+    project, rw = _get_project_for_user(request, code)
+
+    if request.method == "POST":
+        if not rw:
+            return HttpResponseForbidden()
+
+        digest = request.POST.get("probe_digest", "off")
+        project.probe_digest = digest if digest in ("off", "hourly", "daily") else "off"
+        project.status_page_enabled = "status_page_enabled" in request.POST
+        if project.probe_digest == "off":
+            project.digest_next_flush = None
+        project.save()
+        messages.success(request, "Project settings updated.")
+        return redirect("hc-probe-policies", project.code)
+
+    windows = MaintenanceWindow.objects.filter(project=project).order_by("starts")
+    ctx = {
+        "page": "probe-policies",
+        "project": project,
+        "rw": rw,
+        "windows": windows,
+        "active_window": any(w.is_active() for w in windows),
+        "status_page_url": absolute_reverse("hc-status-page", args=[project.code]),
+    }
+    return render(request, "front/project_settings.html", ctx)
+
+
+@require_POST
+@login_required
+def add_maintenance(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
+    """Add a maintenance window: notifications are suppressed during it."""
+
+    project = _get_rw_project_for_user(request, code)
+    try:
+        starts = parse_datetime(request.POST.get("starts", ""))
+        ends = parse_datetime(request.POST.get("ends", ""))
+    except ValueError:
+        starts = ends = None
+    note = request.POST.get("note", "")[:200]
+
+    if not starts or not ends or ends <= starts:
+        messages.error(request, "Invalid maintenance window: check the start/end times.")
+    else:
+        # datetime-local inputs have no timezone: interpret them as UTC:
+        if is_naive(starts):
+            starts = make_aware(starts)
+        if is_naive(ends):
+            ends = make_aware(ends)
+        MaintenanceWindow.objects.create(
+            project=project, starts=starts, ends=ends, note=note
+        )
+        messages.success(request, "Maintenance window added.")
+
+    return redirect("hc-probe-policies", project.code)
+
+
+@require_POST
+@login_required
+def remove_maintenance(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
+    project = _get_rw_project_for_user(request, code)
+    try:
+        window_id = int(request.POST.get("id", ""))
+    except ValueError:
+        return HttpResponseBadRequest()
+
+    MaintenanceWindow.objects.filter(id=window_id, project=project).delete()
+    messages.success(request, "Maintenance window removed.")
+    return redirect("hc-probe-policies", project.code)
+
+
+@login_required
+def notification_errors(
+    request: AuthenticatedHttpRequest, code: UUID
+) -> HttpResponse:
+    """Surface recent notification delivery failures for a project.
+
+    Notification errors otherwise live only in the Django admin. This page
+    lists them per project and shows whether an automatic retry is still
+    queued (with its backoff countdown) or the retries were exhausted.
+    """
+
+    project, rw = _get_project_for_user(request, code)
+
+    q = Notification.objects.filter(owner__project=project).exclude(error="")
+    q = q.select_related("channel", "owner").order_by("-created")[:100]
+
+    frozen_now = now()
+    rows = []
+    for n in q:
+        retrying = n.next_retry is not None and n.retry_payload is not None
+        rows.append(
+            {
+                "notification": n,
+                "check": n.owner,
+                "channel": n.channel,
+                "retrying": retrying,
+                "retry_in": (
+                    int((n.next_retry - frozen_now).total_seconds())
+                    if retrying and n.next_retry
+                    else None
+                ),
+                "exhausted": not retrying and n.retry_count > 0,
+            }
+        )
+
+    ctx = {"page": "probe-policies", "project": project, "rw": rw, "rows": rows}
+    return render(request, "front/notification_errors.html", ctx)
 
 
 @require_POST
@@ -1021,6 +1336,13 @@ def details(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
         if sibling.tags:
             all_tags.update(sibling.tags.split(" "))
 
+    # 30 days of probe history for the sparkline (active probe checks only):
+    probe_metrics: list[ProbeMetric] = []
+    if check.api_url:
+        since = now() - td(days=30)
+        q = ProbeMetric.objects.filter(owner=check, created__gte=since)
+        probe_metrics = list(q.order_by("created"))
+
     ctx = {
         "page": "details",
         "project": check.project,
@@ -1036,6 +1358,9 @@ def details(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
         "tz_switches": _tz_switches(request.profile, check),
         "is_copied": "copied" in request.GET,
         "all_tags": " ".join(sorted(all_tags)),
+        "probe_form": forms.ProbeSettingsForm(instance=check),
+        "probe_metrics": probe_metrics,
+        "snoozed": bool(check.snoozed_until and check.snoozed_until > now()),
     }
 
     return render(request, "front/details.html", ctx)

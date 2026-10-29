@@ -1,0 +1,6 @@
+<!DOCTYPE html>
+<p>Probe digest (<b>{{ period }}</b>) for project <b>{{ project }}</b> &ndash; {{ entries|length }} result(s)</p>
+{% for e in entries %}
+<hr style="border: none; border-top: 1px solid #ddd;">
+<pre style="background-color: #f5f5f5; padding: 8px; border-radius: 4px; max-width: 640px; overflow-x: auto; white-space: pre-wrap;">{{ e.report }}</pre>
+{% endfor %}

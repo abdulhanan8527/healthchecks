@@ -43,13 +43,17 @@ class Sms(HttpTransport):
         if not settings.TWILIO_ACCOUNT or not settings.TWILIO_AUTH:
             raise TransportError("SMS notifications are not enabled")
 
-        text = self.tmpl(
-            "sms_message.html",
-            flip=flip,
-            check=flip.owner,
-            status=flip.new_status,
-            site_name=settings.SITE_NAME,
-        )
+        # SMS messages are billed per segment, so use a short report
+        # without the response body:
+        text = self.probe_report(flip, maxlen=480, include_body=False)
+        if text is None:
+            text = self.tmpl(
+                "sms_message.html",
+                flip=flip,
+                check=flip.owner,
+                status=flip.new_status,
+                site_name=settings.SITE_NAME,
+            )
 
         profile = self.channel.project.owner_profile
         if not profile.authorize_sms():

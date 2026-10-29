@@ -77,8 +77,13 @@ class Pushover(HttpTransport):
             "ping": self.last_ping(flip),
             "down_checks": self.down_checks(check),
         }
-        text = self.tmpl("pushover_message.html", **ctx)
-        title = self.tmpl("pushover_title.html", **ctx)
+        report = self.probe_report(flip, maxlen=1024)
+        if report:
+            text = report
+            title = report.split("\n", 1)[0]
+        else:
+            text = self.tmpl("pushover_message.html", **ctx)
+            title = self.tmpl("pushover_title.html", **ctx)
         prio = up_prio if flip.new_status == "up" else down_prio
 
         payload = {
@@ -86,7 +91,7 @@ class Pushover(HttpTransport):
             "user": user_key,
             "message": text,
             "title": title,
-            "html": 1,
+            "html": 0 if report else 1,
             "priority": int(prio),
             "tags": check.unique_key,
             "url": check.cloaked_url(),

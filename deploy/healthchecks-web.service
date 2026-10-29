@@ -1,0 +1,36 @@
+# Healthchecks web UI (gunicorn). Install:
+#   sudo cp deploy/healthchecks-web.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now healthchecks-web
+#
+# gunicorn is expected to be installed in the project virtualenv:
+#   /home/muhammad-ans/webapps/.venv/bin/pip install gunicorn
+
+[Unit]
+Description=Healthchecks web (gunicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=muhammad-ans
+WorkingDirectory=/home/muhammad-ans/webapps/healthchecks
+Environment="SITE_ROOT=https://healthchecks.example.com"
+Environment="ALLOWED_HOSTS=healthchecks.example.com"
+Environment="DEBUG=False"
+# Environment="DB=postgres"
+# Environment="DB_HOST=127.0.0.1"
+# Environment="DB_NAME=hc"
+# Environment="DB_USER=hc"
+# EnvironmentFile=/etc/healthchecks/env
+ExecStart=/home/muhammad-ans/webapps/.venv/bin/gunicorn hc.wsgi \
+    --bind 127.0.0.1:8001 \
+    --workers 3 \
+    --threads 4 \
+    --timeout 60 \
+    --access-logfile - \
+    --error-logfile -
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

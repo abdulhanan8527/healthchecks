@@ -53,6 +53,98 @@ def get_ping_body(ping: Ping | None, maxlen: int | None = None) -> str | None:
     return body
 
 
+def probe_report_text(
+    name: str, probe: dict, maxlen: int = 4000, include_body: bool = True
+) -> str:
+    """Render the unified probe report as plain text.
+
+    This is the same report the probe result email and the Slack-compatible
+    integrations show. All fields come from the probe context, so the report
+    is dynamic and works for any API shape. Digest payloads (a "digest" key
+    with a list of queued probe reports) render as one combined message.
+
+    """
+
+    if "digest" in probe:
+        entries = probe["digest"]
+        fails = sum(1 for e in entries if not e["verdict"])
+        header = f"Probe digest ({probe.get('period', '')}): {len(entries)} result(s)"
+        if fails:
+            header += f", {fails} FAILURE"
+        lines = [header, f"Project: {probe.get('project', '')}"]
+        for e in entries:
+            lines.append("")
+            lines.append("------------------------------------------------")
+            lines.append(e["report"])
+        if probe.get("details_url"):
+            lines.append("")
+            lines.append(f"View check details: {probe['details_url']}")
+        text = "\n".join(lines)
+        if len(text) > maxlen:
+            text = text[:maxlen] + "\n[truncated]"
+        return text
+
+    verdict = "SUCCESS" if probe["success"] else "FAILURE"
+    title = f"Probe result: {verdict} | {name}"
+    if probe.get("escalation"):
+        title = f"ESCALATION - {title}"
+    lines = [
+        title,
+        "",
+        f"Check: {name}",
+        f"API: {probe['api_method']} {probe['api_url']}",
+        f"HTTP status: {probe['status_code'] or 'n/a'}",
+    ]
+    if probe.get("response_ms") is not None:
+        lines.append(f"Response time: {probe['response_ms']} ms")
+    if probe.get("location"):
+        lines.append(f"Probed from: {probe['location']}")
+    if probe["error"]:
+        lines.append(f"Error: {probe['error']}")
+
+    if probe["rules"]:
+        lines.append("")
+        lines.append("Response checks:")
+        for r in probe["rules"]:
+            mark = "PASS" if r["ok"] else "FAIL"
+            line = f"  [{mark}] {r['path']} {r['op']}"
+            if r["expected"] not in (None, ""):
+                line += f" expected: {r['expected']} |"
+            line += f" actual: {r['actual']}"
+            if not r["ok"] and r.get("error"):
+                line += f" ({r['error']})"
+            lines.append(line)
+
+    if probe["rules_error"]:
+        lines.append(f"Rules error: {probe['rules_error']}")
+
+    if probe.get("drift"):
+        lines.append("")
+        lines.append("Schema drift detected (vs the last successful response):")
+        if probe["drift"].get("added"):
+            lines.append(f"  New fields: {', '.join(probe['drift']['added'])}")
+        if probe["drift"].get("removed"):
+            lines.append(f"  Missing fields: {', '.join(probe['drift']['removed'])}")
+
+    if probe["skipped"]:
+        lines.append(f"Omitted from response body: {', '.join(probe['skipped'])}")
+
+    lines.append(f"Time (UTC): {probe['probe_time']:%Y-%m-%d %H:%M}")
+    lines.append("")
+    lines.append(f"View check details: {probe['details_url']}")
+
+    if include_body and probe["body"]:
+        lines.append("")
+        lines.append("Response body:")
+        lines.append("--------------")
+        lines.append(probe["body"])
+
+    text = "\n".join(lines)
+    if len(text) > maxlen:
+        text = text[:maxlen] + "\n[truncated]"
+    return text
+
+
 class TransportError(Exception):
     def __init__(self, message: str, permanent: bool = False) -> None:
         self.message = message
@@ -115,6 +207,24 @@ class Transport:
         q = q.filter(created__lte=flip.created)
 
         return q.last()
+
+    def probe_report(
+        self, flip: Flip, maxlen: int = 4000, include_body: bool = True
+    ) -> str | None:
+        """Return the unified probe report text, if flip carries a probe result.
+
+        Active probe checks attach their probe report to the flip object, so
+        that every integration can deliver the exact same content as the
+        probe result email.
+
+        """
+
+        probe = getattr(flip, "probe", None)
+        if not probe:
+            return None
+
+        name = flip.owner.name_then_code()
+        return probe_report_text(name, probe, maxlen, include_body)
 
     def tmpl(self, template_name: str, **ctx: Any) -> str:
         # \xa0 is non-breaking space. It causes SMS messages to use UCS2 encoding

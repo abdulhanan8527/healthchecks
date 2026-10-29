@@ -1,0 +1,25 @@
+# Healthchecks housekeeping. Runs nightly maintenance tasks:
+#   prunetokenbucket, pruneobjects, sendreports and probe metric/digest pruning.
+# Runs in a loop, sleeping ~24h between passes.
+#
+#   sudo cp deploy/healthchecks-housekeeping.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now healthchecks-housekeeping
+
+[Unit]
+Description=Healthchecks housekeeping
+After=network.target
+
+[Service]
+Type=simple
+User=muhammad-ans
+WorkingDirectory=/home/muhammad-ans/webapps/healthchecks
+Environment="SITE_ROOT=https://healthchecks.example.com"
+Environment="DEBUG=False"
+# EnvironmentFile=/etc/healthchecks/env
+ExecStart=/home/muhammad-ans/webapps/.venv/bin/python manage.py housekeeping --loop
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

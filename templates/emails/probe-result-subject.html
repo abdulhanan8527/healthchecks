@@ -1,0 +1,1 @@
+{% if escalation %}ESCALATION | {% endif %}{% if success %}Probe OK{% else %}Probe FAILED{% endif %} | {{ check.name_then_code|safe }}{% if status_code %} | HTTP {{ status_code }}{% endif %}

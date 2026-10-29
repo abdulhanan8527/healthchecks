@@ -15,6 +15,7 @@ from django.core.management.base import BaseCommand
 from django.db import close_old_connections, connection
 from django.utils.timezone import now
 
+from hc.api import probes
 from hc.api.models import Check, Flip
 from hc.lib.statsd import statsd
 
@@ -32,6 +33,12 @@ def notify(flip: Flip) -> str | None:
     # Set or clear dates for followup nags
     check = flip.owner
     check.project.update_next_nag_dates()
+
+    # Snooze / maintenance-window suppression also applies to regular
+    # up/down alerts, not just to probe reports:
+    if reason := probes.suppression_reason(check, flip.created):
+        return f"{check.code} goes {flip.new_status} (suppressed: {reason})"
+
     channels = flip.select_channels()
     if not channels:
         return None
@@ -63,6 +70,7 @@ class Command(BaseCommand):
         self.executor = ThreadPoolExecutor(max_workers=10)
         self.seats = BoundedSemaphore(10)
         self.shutdown = False
+        self.last_watchdog = 0.0
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         parser.add_argument(
@@ -86,6 +94,39 @@ class Command(BaseCommand):
                 self.stdout.write(logs)
         except Exception as exc:
             logger.error("Exception in notify", exc_info=exc)
+            raise
+
+    def handle_probes(self) -> int:
+        """Submit due active API probe checks to the executor.
+
+        A probe check is a check with a non-empty api_url field: Healthchecks
+        itself requests the target API and evaluates the HTTP response.
+        probe_check() reschedules the check (updates next_probe) before
+        probing, so a check cannot get submitted twice.
+
+        Returns the number of submitted probes.
+        """
+
+        q = Check.objects.exclude(api_url="").exclude(status="paused")
+        # Remote (multi-location agent) checks are probed by the agents via the
+        # /api/v3/agent/ endpoints, not by this local worker:
+        q = q.exclude(probe_remote=True)
+        q = q.filter(next_probe__lt=now()).order_by("next_probe")
+
+        count = 0
+        for check in q:
+            f = self.executor.submit(probes.probe_check, check)
+            f.add_done_callback(self.on_probe_done)
+            count += 1
+
+        return count
+
+    def on_probe_done(self, future: Future[str]) -> None:
+        try:
+            if summary := future.result():
+                self.stdout.write(summary + "\n")
+        except Exception as exc:
+            logger.error("Exception in probe_check", exc_info=exc)
             raise
 
     def process_one_flip(self) -> bool:
@@ -199,6 +240,46 @@ class Command(BaseCommand):
 
         self.stdout.write("sendalerts is now running\n")
         while not self.shutdown:
+            # Submit due active API probes
+            if num_probes := self.handle_probes():
+                self.stdout.write(f"Submitted {num_probes} API probe(s)\n")
+
+            # Flush batched probe digests that are due (hourly/daily mode):
+            try:
+                if sent := probes.flush_due_digests():
+                    self.stdout.write(f"Flushed probe digest(s): {sent} message(s)\n")
+            except Exception as exc:
+                logger.error("Exception in flush_due_digests", exc_info=exc)
+
+            # Escalate probe checks that keep failing past their deadline:
+            try:
+                if escalated := probes.handle_escalations():
+                    self.stdout.write(f"Escalated {escalated} probe check(s)\n")
+            except Exception as exc:
+                logger.error("Exception in handle_escalations", exc_info=exc)
+
+            # Retry notifications that failed transiently (backoff queue):
+            try:
+                attempted, succeeded = probes.retry_failed_notifications()
+                if attempted:
+                    self.stdout.write(
+                        f"Retried {attempted} failed notification(s), "
+                        f"{succeeded} succeeded\n"
+                    )
+            except Exception as exc:
+                logger.error(
+                    "Exception in retry_failed_notifications", exc_info=exc
+                )
+
+            # Monitor the monitor: ping "watchdog"-tagged checks once a minute,
+            # so a dead worker alerts through the normal timeout machinery:
+            if time.time() - self.last_watchdog > 60:
+                self.last_watchdog = time.time()
+                try:
+                    probes.ping_watchdogs()
+                except Exception as exc:
+                    logger.error("Exception in ping_watchdogs", exc_info=exc)
+
             # Create flips for any checks going down
             while self.handle_going_down() and not self.shutdown:
                 pass

@@ -79,7 +79,9 @@
             </div>
         </td>
         <td class="hidden-xs hidden-sm hidden-md">
-            {% if project.show_slugs and not check.slug %}
+            {% if check.api_url %}
+                <span class="my-checks-url">{{ check.api_url }}</span>
+            {% elif project.show_slugs and not check.slug %}
                 <span class="unavailable">unavailable, slug not set</span>
             {% else %}
                 <span class="my-checks-url">{{ check.url|format_ping_endpoint }}</span>

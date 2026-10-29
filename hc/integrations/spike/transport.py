@@ -19,10 +19,15 @@ class Spike(HttpTransport):
             "status": flip.new_status,
             "ping": self.last_ping(flip),
         }
+        report = self.probe_report(flip)
         payload = {
             "check_id": str(flip.owner.unique_key),
-            "title": self.tmpl("spike_title.html", **ctx),
-            "message": self.tmpl("spike_description.html", **ctx),
+            "title": (
+                report.split("\n", 1)[0]
+                if report
+                else self.tmpl("spike_title.html", **ctx)
+            ),
+            "message": report or self.tmpl("spike_description.html", **ctx),
             "status": flip.new_status,
         }
 

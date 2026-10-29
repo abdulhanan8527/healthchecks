@@ -1,0 +1,40 @@
+{% load hc_extras linemode %}{% linemode %}
+{% line %}{% if escalation %}ESCALATION - {% endif %}Probe result: {% if success %}SUCCESS{% else %}FAILURE{% endif %}{% endline %}
+{% line %}{% endline %}
+{% line %}Check: {{ check.name_then_code|safe }}{% endline %}
+{% line %}API: {{ check.api_method }} {{ check.api_url }}{% endline %}
+{% if status_code %}
+{% line %}HTTP status: {{ status_code }}{% endline %}
+{% endif %}
+{% line %}Response time: {{ response_ms }} ms{% endline %}
+{% if error %}
+{% line %}Error: {{ error }}{% endline %}
+{% endif %}
+{% if rules %}
+{% line %}{% endline %}
+{% line %}Response checks:{% endline %}
+{% for r in rules %}
+{% line %}  [{% if r.ok %}PASS{% else %}FAIL{% endif %}] {{ r.path }} {{ r.op }}{% if r.expected %} expected: {{ r.expected }} |{% endif %} actual: {{ r.actual }}{% if not r.ok %} ({{ r.error }}){% endif %}{% endline %}
+{% endfor %}
+{% endif %}
+{% if rules_error %}
+{% line %}Rules error: {{ rules_error }}{% endline %}
+{% endif %}
+{% if drift %}
+{% line %}{% endline %}
+{% line %}Schema drift detected (compared to the last successful response):{% endline %}
+{% if drift.added %}{% line %}  New fields: {{ drift.added|join:", " }}{% endline %}{% endif %}
+{% if drift.removed %}{% line %}  Missing fields: {{ drift.removed|join:", " }}{% endline %}{% endif %}
+{% endif %}
+{% if skipped %}
+{% line %}Omitted from response body: {{ skipped|join:", " }}{% endline %}
+{% endif %}
+{% line %}Time: {{ probe_time }}{% endline %}
+{% line %}{% endline %}
+{% line %}View on {% site_name %}:{% endline %}
+{% line %}{{ details_url }}{% endline %}
+{% line %}{% endline %}
+{% line %}Response body:{% endline %}
+{% line %}--------------{% endline %}
+{% line %}{{ body|safe }}{% endline %}
+{% endlinemode %}

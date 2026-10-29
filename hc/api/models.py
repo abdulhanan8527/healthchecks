@@ -38,6 +38,8 @@ from hc.lib.urls import absolute_reverse
 STATUSES = (("up", "Up"), ("down", "Down"), ("new", "New"), ("paused", "Paused"))
 DEFAULT_TIMEOUT = td(days=1)
 DEFAULT_GRACE = td(hours=1)
+# Backoff schedule (seconds) for retrying transient notification failures:
+NOTIFICATION_RETRY_DELAYS = [60, 300, 1800, 7200]
 NEVER = datetime(3000, 1, 1, tzinfo=timezone.utc)
 CHECK_KINDS = (("simple", "Simple"), ("cron", "Cron"), ("oncalendar", "OnCalendar"))
 # max time between start and ping where we will consider both events related:
@@ -213,6 +215,52 @@ class Check(models.Model):
     manual_resume = models.BooleanField(default=False)
     badge_key = models.UUIDField(default=uuid.uuid4, unique=True)
 
+    # Active probing: Healthchecks requests this URL on schedule and evaluates
+    # the HTTP response. Empty value means a legacy "passive" check.
+    api_url = models.CharField(max_length=1000, blank=True)
+    api_method = models.CharField(max_length=10, default="GET")
+    api_token = models.CharField(max_length=500, blank=True)
+    notify_email = models.EmailField(blank=True)
+    # JSON list of success rules evaluated against the probe response body.
+    # Empty means "any HTTP 2xx response counts as success":
+    api_rules = models.TextField(blank=True)
+    # Newline-separated list of JSON paths (e.g. "data.route_wise_trips")
+    # removed from the response body before it is included in result emails:
+    api_skip_paths = models.TextField(blank=True)
+    next_probe = models.DateTimeField(null=True, blank=True)
+    # Extra probe request headers (a JSON object) and request body (sent
+    # verbatim, for POST probes). Empty means "no extra headers/body":
+    api_headers = models.TextField(blank=True)
+    api_body = models.TextField(blank=True)
+    # Per-probe request timeout in seconds (0 = use the global default):
+    api_timeout = models.PositiveIntegerField(default=0)
+    # When True, this check is probed by a remote multi-location agent
+    # (see the probe_agent command and the /api/v3/agent/ endpoints) instead
+    # of by the local sendalerts worker:
+    probe_remote = models.BooleanField(default=False)
+    # Alert policy: how many consecutive failures must happen before a
+    # notification is sent. >1 gives the probe an automatic retry chance
+    # (retries are scheduled PROBE_RETRY_DELAY seconds after each failure):
+    probe_min_failures = models.IntegerField(default=1)
+    probe_fail_count = models.IntegerField(default=0)
+    probe_notified_failure = models.BooleanField(default=False)
+    probe_fail_since = models.DateTimeField(null=True, blank=True)
+    # Escalation: if a failure persists for this many minutes (0 = off),
+    # send a second, escalated notification to the same destinations:
+    probe_escalate_after = models.IntegerField(default=0)
+    probe_escalated = models.BooleanField(default=False)
+    # Notifications are suppressed while snoozed (Mattermost buttons, UI):
+    snoozed_until = models.DateTimeField(null=True, blank=True)
+    # Schema drift detection: sorted leaf paths of the last successful
+    # JSON response body. Compared against the current response:
+    api_schema_keys = models.JSONField(default=list, blank=True)
+    # Dependency suppression: other checks in the same project this check
+    # depends on. While any dependency is currently "down", notifications
+    # for this check are suppressed (the root cause is already alerting):
+    depends_on = models.ManyToManyField(
+        "self", blank=True, symmetrical=False, related_name="dependents"
+    )
+
     n_pings = models.IntegerField(default=0)
     last_ping = models.DateTimeField(null=True, blank=True)
     last_start = models.DateTimeField(null=True, blank=True)
@@ -235,6 +283,7 @@ class Check(models.Model):
                 condition=~models.Q(status="down"),
             ),
             models.Index(fields=["project_id", "slug"], name="api_check_project_slug"),
+            models.Index(fields=["next_probe"], name="api_check_next_probe"),
         )
 
     def __str__(self) -> str:
@@ -534,8 +583,11 @@ class Check(models.Model):
 
                 new_status = "down" if action == "fail" else "up"
                 if self.status != new_status:
-                    reason = "fail" if action == "fail" else ""
-                    self.create_flip(new_status, reason=reason)
+                    # Active probe checks report via probe result emails only:
+                    # do not raise up/down flips (and their notifications):
+                    if not self.api_url:
+                        reason = "fail" if action == "fail" else ""
+                        self.create_flip(new_status, reason=reason)
                     self.status = new_status
 
             self.alert_after = self.going_down_after()
@@ -1169,14 +1221,26 @@ class Channel(models.Model):
             return "Channel or check does not exist any more"
 
         start, error, disabled = now(), "", self.disabled
+        permanent = False
         try:
             self.transport.notify(flip, notification=n)
 
         except transports.TransportError as e:
             disabled = True if e.permanent else disabled
+            permanent = e.permanent
             error = e.message
 
-        Notification.objects.filter(id=n.id).update(error=error)
+        update_fields: dict[str, Any] = {"error": error}
+        if error and not permanent and not is_test and n.owner_id:
+            # Transient failure: queue an automatic retry with backoff. The
+            # flip is serialized so the notification can be replayed later
+            # (see hc.api.probes.retry_failed_notifications):
+            update_fields["retry_payload"] = flip.retry_payload()
+            update_fields["next_retry"] = now() + td(
+                seconds=NOTIFICATION_RETRY_DELAYS[0]
+            )
+
+        Notification.objects.filter(id=n.id).update(**update_fields)
         Channel.objects.filter(id=self.id).update(
             last_notify=start,
             last_notify_duration=now() - start,
@@ -1345,6 +1409,11 @@ class Notification(models.Model):
     channel = models.ForeignKey(Channel, models.CASCADE)
     created = models.DateTimeField(default=now)
     error = models.CharField(max_length=200, blank=True)
+    # Automatic retry queue for transient (non-permanent) delivery failures:
+    retry_count = models.IntegerField(default=0)
+    next_retry = models.DateTimeField(null=True, blank=True)
+    # Serialized flip (incl. probe payload) needed to replay the notification:
+    retry_payload = models.JSONField(null=True, blank=True)
 
     class Meta:
         get_latest_by = "created"
@@ -1414,6 +1483,37 @@ class Flip(models.Model):
         if self.reason == "fail":
             return "received a failure signal"
         return None
+
+    def retry_payload(self) -> dict[str, Any]:
+        """Serialize this flip so a failed notification can be replayed later.
+
+        The optional in-memory "probe" context (attached by the probe engine,
+        not a model field) is stored minus the live Check instance, which is
+        re-fetched by id at retry time. Datetime values are converted to ISO
+        strings so the payload is plain JSON (Notification.retry_payload is a
+        JSONField with no custom encoder).
+        """
+
+        def jsonable(value: Any) -> Any:
+            if isinstance(value, datetime):
+                return value.isoformat()
+            if isinstance(value, dict):
+                return {k: jsonable(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [jsonable(v) for v in value]
+            return value
+
+        data: dict[str, Any] = {
+            "owner": str(self.owner_id),
+            "created": self.created.isoformat(),
+            "old_status": self.old_status,
+            "new_status": self.new_status,
+            "reason": self.reason,
+        }
+        probe = getattr(self, "probe", None)
+        if isinstance(probe, dict):
+            data["probe"] = jsonable({k: v for k, v in probe.items() if k != "check"})
+        return data
 
     @cached_property
     def down_duration(self) -> td | None:
@@ -1585,3 +1685,61 @@ class TokenBucket(models.Model):
         # Use force=True, we are recording the S3 error after the error already
         # happened, and want to record it even if the tokens field would go negative.
         TokenBucket.authorize("s3_get_object_error", 3, 60, force=True)
+
+
+class ProbeMetric(models.Model):
+    """Outcome of a single active API probe run.
+
+    Powers the probe history / trend sparklines on the check details page,
+    the public status page, digest contents and escalation messages.
+    """
+
+    owner = models.ForeignKey(Check, models.CASCADE)
+    created = models.DateTimeField(default=now)
+    success = models.BooleanField(default=False)
+    status_code = models.IntegerField(default=0)
+    response_ms = models.IntegerField(default=0)
+    rules = models.JSONField(default=list, blank=True)
+    report = models.TextField(blank=True)
+    # Probe origin: "" for the local worker, or an agent-supplied label
+    # (e.g. "eu-west", "us-east") for multi-location remote probes:
+    location = models.CharField(max_length=100, blank=True, default="")
+
+    class Meta:
+        indexes = (
+            models.Index(
+                fields=["owner", "created"], name="api_probemetric_owner_created"
+            ),
+        )
+
+
+class MaintenanceWindow(models.Model):
+    """Time range during which a project's notifications are suppressed."""
+
+    project = models.ForeignKey("accounts.Project", models.CASCADE)
+    starts = models.DateTimeField()
+    ends = models.DateTimeField()
+    note = models.CharField(max_length=200, blank=True)
+
+    def is_active(self, dt: datetime | None = None) -> bool:
+        dt = dt or now()
+        return self.starts <= dt <= self.ends
+
+
+class DigestEntry(models.Model):
+    """A single probe result queued for digest delivery.
+
+    When a project has probe_digest enabled, probe notifications are not
+    sent immediately. Instead one DigestEntry is created per destination:
+    per integration channel (channel set, recipient empty), or per email
+    address (channel null, recipient set). The sendalerts worker flushes
+    due digests by combining the entries into a single message.
+    """
+
+    project = models.ForeignKey("accounts.Project", models.CASCADE)
+    owner = models.ForeignKey(Check, models.CASCADE)
+    channel = models.ForeignKey(Channel, models.CASCADE, null=True, blank=True)
+    recipient = models.CharField(max_length=200, blank=True)
+    verdict = models.BooleanField(default=False)
+    report = models.TextField(blank=True)
+    created = models.DateTimeField(default=now)

@@ -1,0 +1,119 @@
+{% extends "base_project.html" %}
+{% load compress static hc_extras %}
+
+{% block title %}Probe Policies - {{ site_name }}{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-sm-12">
+        <h1>Probe Policies</h1>
+        <p>
+            <a href="{% url 'hc-notification-errors' project.code %}">
+                View notification delivery errors &rarr;
+            </a>
+        </p>
+    </div>
+    <div class="col-sm-10">
+        {% if rw %}
+        <form method="post">
+            {% csrf_token %}
+
+            <h2>Probe Notifications</h2>
+            <div class="form-group">
+                <label for="probe-digest">Digest mode</label>
+                <select id="probe-digest" name="probe_digest" class="form-control" style="width: 320px">
+                    <option value="off" {% if project.probe_digest == "off" %}selected{% endif %}>
+                        Off &ndash; send every probe result immediately
+                    </option>
+                    <option value="hourly" {% if project.probe_digest == "hourly" %}selected{% endif %}>
+                        Hourly digest
+                    </option>
+                    <option value="daily" {% if project.probe_digest == "daily" %}selected{% endif %}>
+                        Daily digest
+                    </option>
+                </select>
+                <span class="help-block">
+                    When a digest mode is on, probe results are batched and
+                    delivered as one combined message per destination per period.
+                </span>
+            </div>
+
+            <h2>Public Status Page</h2>
+            <div class="checkbox">
+                <label>
+                    <input type="checkbox" name="status_page_enabled"
+                           {% if project.status_page_enabled %}checked{% endif %}>
+                    Enable the public status page
+                </label>
+            </div>
+            {% if project.status_page_enabled %}
+            <p>
+                Public URL (no login required):<br>
+                <code class="click-to-copy">{{ status_page_url }}</code>
+            </p>
+            {% endif %}
+
+            <button type="submit" class="btn btn-primary">Save Settings</button>
+        </form>
+
+        <hr>
+
+        <h2>Maintenance Windows</h2>
+        <p>
+            During a maintenance window, all notifications for this project
+            (probe reports and ping alerts) are suppressed. Probes and pings
+            keep running and are recorded in the event log.
+        </p>
+        {% if active_window %}
+        <div class="alert alert-info">
+            A maintenance window is <b>currently active</b> &ndash;
+            notifications are being suppressed.
+        </div>
+        {% endif %}
+        <table class="table">
+            <tr>
+                <th>Starts (UTC)</th>
+                <th>Ends (UTC)</th>
+                <th>Note</th>
+                <th></th>
+            </tr>
+            {% for w in windows %}
+            <tr>
+                <td>{{ w.starts|date:"Y-m-d H:i" }}</td>
+                <td>{{ w.ends|date:"Y-m-d H:i" }}</td>
+                <td>{{ w.note }}</td>
+                <td>
+                    <form method="post" action="{% url 'hc-remove-maintenance' project.code %}">
+                        {% csrf_token %}
+                        <input type="hidden" name="id" value="{{ w.id }}">
+                        <button type="submit" class="btn btn-danger btn-xs">Remove</button>
+                    </form>
+                </td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="4">No maintenance windows.</td></tr>
+            {% endfor %}
+        </table>
+        <form method="post" action="{% url 'hc-add-maintenance' project.code %}" class="form-inline">
+            {% csrf_token %}
+            <div class="form-group">
+                <label for="mw-starts">Starts</label>
+                <input id="mw-starts" type="datetime-local" name="starts" class="form-control" required>
+            </div>
+            <div class="form-group">
+                <label for="mw-ends">Ends</label>
+                <input id="mw-ends" type="datetime-local" name="ends" class="form-control" required>
+            </div>
+            <div class="form-group">
+                <label for="mw-note">Note</label>
+                <input id="mw-note" type="text" name="note" class="form-control" maxlength="200" placeholder="e.g. Database maintenance">
+            </div>
+            <button type="submit" class="btn btn-default">Add Window</button>
+        </form>
+        <p class="help-block">Times are interpreted as UTC.</p>
+        {% else %}
+        <p>You do not have permission to edit this project's settings.</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

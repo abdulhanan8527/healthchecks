@@ -79,12 +79,20 @@ class WhatsApp(HttpTransport):
         else:
             content_sid = settings.WHATSAPP_UP_CONTENT_SID
 
+        # WhatsApp messages use pre-approved Twilio content templates, so we
+        # can only substitute the first line of the probe report:
+        report = self.probe_report(flip, maxlen=160, include_body=False)
+        if report:
+            variable = report.split("\n", 1)[0]
+        else:
+            variable = flip.owner.name_then_code()
+
         data = {
             "To": f"whatsapp:{self.channel.phone.value}",
             "From": f"whatsapp:{settings.TWILIO_FROM}",
             "MessagingServiceSid": settings.TWILIO_MESSAGING_SERVICE_SID,
             "ContentSid": content_sid,
-            "ContentVariables": json.dumps({1: flip.owner.name_then_code()}),
+            "ContentVariables": json.dumps({1: variable}),
             "StatusCallback": notification.status_url(),
         }
 

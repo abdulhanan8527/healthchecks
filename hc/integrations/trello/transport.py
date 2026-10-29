@@ -21,10 +21,15 @@ class Trello(HttpTransport):
             "status": flip.new_status,
             "ping": self.last_ping(flip),
         }
+        report = self.probe_report(flip)
         params = {
             "idList": self.channel.trello.list_id,
-            "name": self.tmpl("trello_name.html", **ctx),
-            "desc": self.tmpl("trello_desc.html", **ctx),
+            "name": (
+                report.split("\n", 1)[0]
+                if report
+                else self.tmpl("trello_name.html", **ctx)
+            ),
+            "desc": report or self.tmpl("trello_desc.html", **ctx),
             "key": settings.TRELLO_APP_KEY,
             "token": self.channel.trello.token,
         }

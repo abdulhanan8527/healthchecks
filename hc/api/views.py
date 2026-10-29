@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 from pydantic_core import PydanticCustomError
 
 from hc.accounts.models import Profile, Project
+from hc.api import probes
 from hc.api.decorators import ApiRequest, authorize, authorize_read, cors
 from hc.api.forms import FlipsFiltersForm
 from hc.api.models import Channel, Check, Flip, Notification, Ping, prepare_durations
@@ -235,7 +236,19 @@ def ping(
             return HttpResponseBadRequest("invalid uuid format")
         rid = UUID(rid_str)
 
+    # A ping to an active probe check is a "my job just finished" signal from
+    # the monitored server. Record it as a log event (it must not change the
+    # check's status - only the probe's verdict does that), and probe the API
+    # right away (the sendalerts worker picks this up within seconds),
+    # no matter what time the job completed:
+    signal = bool(check.api_url) and action == "success"
+    if signal:
+        action = "log"
+
     check.ping(remote_addr, scheme, method, ua, body, action, rid, exitstatus)
+
+    if signal:
+        Check.objects.filter(id=check.id).update(next_probe=now())
 
     response = HttpResponse("OK")
     if settings.PING_BODY_LIMIT is not None:
@@ -475,6 +488,83 @@ def channels(request: ApiRequest) -> JsonResponse:
     q = Channel.objects.filter(project=request.project)
     channels = [ch.to_dict() for ch in q]
     return JsonResponse({"channels": channels})
+
+
+@cors("GET")
+@csrf_exempt
+@authorize
+def agent_checks(request: ApiRequest) -> JsonResponse:
+    """List probe checks due for remote (multi-location agent) probing.
+
+    Returns everything an agent needs to perform each probe from its own
+    location: method, URL, headers (incl. auth), body and timeout. Only checks
+    with probe_remote=True that are due (next_probe in the past) and not
+    paused are returned.
+    """
+
+    q = Check.objects.filter(project=request.project, probe_remote=True)
+    q = q.exclude(api_url="").exclude(status="paused")
+    q = q.filter(next_probe__lt=now()).order_by("next_probe")
+
+    checks = []
+    for check in q[:50]:
+        headers = {}
+        if check.api_token:
+            headers["Authorization"] = "Bearer " + check.api_token
+        extra, _ = probes.parse_api_headers(check.api_headers)
+        headers.update(extra)
+        checks.append(
+            {
+                "code": str(check.code),
+                "name": check.name_then_code(),
+                "method": check.api_method,
+                "url": check.api_url,
+                "headers": headers,
+                "body": check.api_body,
+                "timeout": check.api_timeout or probes.PROBE_TIMEOUT,
+            }
+        )
+    return JsonResponse({"checks": checks})
+
+
+@cors("POST")
+@csrf_exempt
+@authorize
+def agent_result(request: ApiRequest, code: UUID) -> HttpResponse:
+    """Ingest one probe result submitted by a remote multi-location agent.
+
+    The agent posts {status_code, response_ms, body, location, error}; the
+    server runs the standard probe evaluation pipeline (rules, threshold,
+    suppression, digest, notifications) and records the metric tagged with the
+    agent's location label.
+    """
+
+    check = get_object_or_404(Check, code=code)
+    if check.project_id != request.project.id:
+        return HttpResponseForbidden()
+    if not check.probe_remote:
+        return HttpResponseBadRequest("check is not configured for remote probing")
+
+    data = request.json
+    try:
+        status_code = int(data.get("status_code", 0))
+        response_ms = int(data.get("response_ms", 0))
+    except (TypeError, ValueError):
+        return HttpResponseBadRequest("status_code and response_ms must be integers")
+
+    body = data.get("body", "")
+    if not isinstance(body, str):
+        return HttpResponseBadRequest("body must be a string")
+
+    summary = probes.ingest_remote_probe(
+        check,
+        status_code=status_code,
+        body=body,
+        response_ms=response_ms,
+        location=str(data.get("location", "")),
+        error=str(data.get("error", ""))[:200],
+    )
+    return JsonResponse({"ok": True, "summary": summary})
 
 
 @authorize_read

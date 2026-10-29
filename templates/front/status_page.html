@@ -1,0 +1,82 @@
+{% load hc_extras %}<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title>{{ project.name|default:"Project" }} &ndash; Status</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                "Helvetica Neue", Arial, sans-serif;
+            margin: 0; padding: 32px 16px; background: #f5f6f8; color: #333;
+        }
+        .wrap { max-width: 860px; margin: 0 auto; }
+        h1 { font-size: 24px; margin-bottom: 4px; }
+        .meta { color: #777; font-size: 13px; margin-bottom: 24px; }
+        table { width: 100%; border-collapse: collapse; background: #fff;
+            border-radius: 6px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+        th, td { padding: 10px 14px; text-align: left; font-size: 14px;
+            border-bottom: 1px solid #eee; vertical-align: middle; }
+        th { background: #fafafa; font-size: 12px; text-transform: uppercase;
+            letter-spacing: .04em; color: #666; }
+        tr:last-child td { border-bottom: none; }
+        .dot { display: inline-block; width: 10px; height: 10px; border-radius: 5px;
+            margin-right: 8px; }
+        .dot-up, .dot-new { background: #3c8618; }
+        .dot-down { background: #d9534f; }
+        .dot-grace, .dot-paused, .dot-started { background: #999; }
+        .ok { color: #3c8618; } .bad { color: #d9534f; }
+        svg { display: block; }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <h1>{{ project.name|default:"Project" }} &ndash; Status</h1>
+    <p class="meta">Generated {{ generated|date:"Y-m-d H:i" }} UTC &middot; refreshed every minute</p>
+    <table>
+        <thead>
+            <tr>
+                <th>Check</th>
+                <th>Status</th>
+                <th>Last probe</th>
+                <th>Last 30 days</th>
+                <th>Probes OK</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for row in rows %}
+            <tr>
+                <td>{{ row.check.name_then_code }}</td>
+                <td>
+                    <span class="dot dot-{{ row.status }}"></span>{{ row.status|title }}
+                </td>
+                <td>
+                    {% with last=row.metrics|last %}
+                        {% if last %}
+                            <span class="{% if last.success %}ok{% else %}bad{% endif %}">
+                                {{ last.created|date:"Y-m-d H:i" }} UTC
+                                ({{ last.response_ms }} ms)
+                            </span>
+                        {% else %}
+                            &ndash;
+                        {% endif %}
+                    {% endwith %}
+                </td>
+                <td>{{ row.metrics|probe_sparkline:100 }}</td>
+                <td>
+                    {% if row.total_count %}
+                        {{ row.ok_count }}/{{ row.total_count }}
+                    {% else %}
+                        &ndash;
+                    {% endif %}
+                </td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="5">This project has no checks yet.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+</body>
+</html>

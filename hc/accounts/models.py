@@ -449,6 +449,12 @@ class Project(models.Model):
     badge_key = models.CharField(max_length=150, unique=True)
     ping_key = models.CharField(max_length=128, blank=True, null=True, unique=True)
     show_slugs = models.BooleanField(default=False)
+    # Public status page (read-only, no login required):
+    status_page_enabled = models.BooleanField(default=False)
+    # Probe digest mode: "off", "hourly" or "daily". When enabled, probe
+    # notifications are batched and sent by the sendalerts worker:
+    probe_digest = models.CharField(max_length=10, default="off")
+    digest_next_flush = models.DateTimeField(null=True, blank=True)
 
     objects = ProjectManager()
     # used in hc.front.views to cache the aggregate status of all checks in the project
